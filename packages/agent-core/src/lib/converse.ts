@@ -93,6 +93,13 @@ const preProcessInput = (
   // we cannot use JSON.parse(JSON.stringify(input)) here because input sometimes contains Buffer object for image.
   input = structuredClone(input);
 
+  const betaHeaders: string[] = [];
+
+  // Enable 1M context window for models that support it
+  if (modelConfig.maxInputTokens > 200_000) {
+    betaHeaders.push('context-1m-2025-08-07');
+  }
+
   // remove toolChoice if not supported
   if (input.toolConfig?.toolChoice) {
     if (modelConfig.toolChoiceSupport.every((choice) => !(choice in input.toolConfig!.toolChoice!))) {
@@ -146,7 +153,11 @@ const preProcessInput = (
     };
 
     if (modelConfig.interleavedThinkingSupport) {
-      input.additionalModelRequestFields.anthropic_beta = ['interleaved-thinking-2025-05-14'];
+      betaHeaders.push('interleaved-thinking-2025-05-14');
+    }
+
+    if (betaHeaders.length > 0) {
+      input.additionalModelRequestFields.anthropic_beta = betaHeaders;
     }
   } else {
     // when we disable reasoning, we have to remove
@@ -157,6 +168,14 @@ const preProcessInput = (
       });
       return message;
     });
+
+    if (betaHeaders.length > 0) {
+      const existing = (input.additionalModelRequestFields ?? {}) as Record<string, unknown>;
+      input.additionalModelRequestFields = {
+        ...existing,
+        anthropic_beta: betaHeaders,
+      };
+    }
   }
   // remove cachePoints if not supported
   if (!modelConfig.cacheSupport.includes('system') && input.system) {
