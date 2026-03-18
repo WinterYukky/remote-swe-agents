@@ -7,6 +7,17 @@ interface SwipeGestureOptions {
   maxVerticalDeviation?: number;
 }
 
+function isInsideScrollableElement(element: EventTarget | null): boolean {
+  let el = element as HTMLElement | null;
+  while (el) {
+    if (el.dataset?.scrollable === 'true' || el.scrollWidth > el.clientWidth) {
+      return true;
+    }
+    el = el.parentElement;
+  }
+  return false;
+}
+
 export function useSwipeGesture({
   onSwipeRight,
   onSwipeLeft,
@@ -15,15 +26,19 @@ export function useSwipeGesture({
 }: SwipeGestureOptions) {
   const touchStartX = useRef(0);
   const touchStartY = useRef(0);
+  const ignoreSwipe = useRef(false);
 
   useEffect(() => {
     const handleTouchStart = (e: TouchEvent) => {
       const touch = e.touches[0];
       touchStartX.current = touch.clientX;
       touchStartY.current = touch.clientY;
+      ignoreSwipe.current = isInsideScrollableElement(e.target);
     };
 
     const handleTouchEnd = (e: TouchEvent) => {
+      if (ignoreSwipe.current) return;
+
       const touch = e.changedTouches[0];
       const deltaX = touch.clientX - touchStartX.current;
       const deltaY = Math.abs(touch.clientY - touchStartY.current);

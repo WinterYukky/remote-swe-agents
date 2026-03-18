@@ -40,7 +40,7 @@ export const MessageItem = ({ message, showTimestamp }: MessageItemProps) => {
         {showTimestamp &&
           new Date(message.timestamp).toLocaleTimeString(localeForDate, { hour: '2-digit', minute: '2-digit' })}
       </div>
-      <div className="flex-1">
+      <div className="flex-1 min-w-0">
         {message.type === 'toolUse' ? (
           <ToolUseRenderer
             content={message.content}
@@ -51,7 +51,7 @@ export const MessageItem = ({ message, showTimestamp }: MessageItemProps) => {
         ) : (
           <div className="text-gray-900 dark:text-white pb-2 break-all">
             <div className="flex items-start">
-              <div className="flex-1">
+              <div className="flex-1 min-w-0">
                 {message.reasoningText && (
                   <div className="mb-3">
                     <button
