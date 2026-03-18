@@ -36,6 +36,7 @@ import {
   replyPRCommentTool,
   reportProgressTool,
   sendImageTool,
+  createNewSessionTool,
   todoInitTool,
   todoUpdateTool,
   updateSessionTitleTool,
@@ -148,6 +149,7 @@ const agentLoop = async (workerId: string, cancellationToken: CancellationToken)
     todoInitTool,
     todoUpdateTool,
     updateSessionTitleTool,
+    createNewSessionTool,
   ].filter(
     (tool) =>
       customAgent.tools.includes(tool.name) ||
