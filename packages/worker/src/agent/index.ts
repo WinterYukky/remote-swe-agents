@@ -9,7 +9,9 @@ import {
   middleOutFiltering,
   noOpFiltering,
   saveConversationHistory,
-  saveConversationHistoryAtomic,
+  saveToolUseMessage,
+  saveToolResultMessage,
+  repairDanglingToolUse,
   updateMessageTokenCount,
   readMetadata,
   renderToolResult,
@@ -36,7 +38,7 @@ import { sendWebappEvent } from '@remote-swe-agents/agent-core/lib';
 import { CancellationToken } from '../common/cancellation-token';
 import { updateAgentStatusWithEvent } from '../common/status';
 import { refreshSession } from '../common/refresh-session';
-import { DefaultAgent } from './lib/default-agent';
+import { DefaultAgent, getEssentialSystemPrompt, getDefaultKnowledgePrompt } from './lib/default-agent';
 import { EmptyMcpConfig, mcpConfigSchema, modelConfigs, ModelType } from '@remote-swe-agents/agent-core/schema';
 
 const agentLoop = async (workerId: string, cancellationToken: CancellationToken) => {
@@ -70,16 +72,39 @@ const agentLoop = async (workerId: string, cancellationToken: CancellationToken)
   );
   if (!allItems) return;
 
-  const baseSystemPrompt = customAgent.systemPrompt || DefaultAgent.systemPrompt;
+  // Repair any dangling toolUse messages (toolUse without a matching toolResult)
+  // that may exist from interrupted tool executions
+  const repairedItems = await repairDanglingToolUse(workerId, allItems);
+  if (repairedItems.length > 0) {
+    // Insert repaired toolResult items at the correct positions
+    for (const repairedItem of repairedItems) {
+      const insertIndex = allItems.findIndex((item) => item.SK > repairedItem.SK);
+      if (insertIndex === -1) {
+        allItems.push(repairedItem);
+      } else {
+        allItems.splice(insertIndex, 0, repairedItem);
+      }
+    }
+  }
 
-  let systemPrompt = baseSystemPrompt;
+  // Build system prompt from layers:
+  // 1. Essential prompt (always included - tool usage, security, session title)
+  // 2. Default knowledge prompt (included when no custom prompt, or when includeDefaultKnowledge is true)
+  // 3. Custom prompt (agent-specific instructions)
+  const essentialPrompt = getEssentialSystemPrompt();
+  const hasCustomPrompt = Boolean(customAgent.systemPrompt);
+  const includeKnowledge = !hasCustomPrompt || customAgent.includeDefaultKnowledge !== false;
+  const knowledgePrompt = includeKnowledge ? getDefaultKnowledgePrompt() : '';
+  const customPrompt = hasCustomPrompt ? customAgent.systemPrompt : '';
+
+  let systemPrompt = [essentialPrompt, knowledgePrompt, customPrompt].filter(Boolean).join('\n\n');
 
   // Try to append common prompt from DynamoDB
   const tryAppendCommonPrompt = async () => {
     try {
       const commonPromptData = await readCommonPrompt();
       if (commonPromptData && commonPromptData.additionalSystemPrompt) {
-        systemPrompt = `${baseSystemPrompt}\n\n## Common Prompt\n${commonPromptData.additionalSystemPrompt}`;
+        systemPrompt = `${systemPrompt}\n\n## Common Prompt\n${commonPromptData.additionalSystemPrompt}`;
       }
     } catch (error) {
       console.error('Error retrieving common prompt:', error);
@@ -124,8 +149,10 @@ const agentLoop = async (workerId: string, cancellationToken: CancellationToken)
 
   const tools = allTools.filter(
     (tool) =>
+      // Exclude GitHub tools if GitHub is not configured
       (isGitHubConfigured() || !gitHubToolNames.includes(tool.name)) &&
-      (customAgent.tools.includes(tool.name) || requiredToolNames.includes(tool.name))
+      // Include tool if useAllTools is enabled, or it's in the agent's selected tools, or is a required tool
+      (customAgent.useAllTools || customAgent.tools.includes(tool.name) || requiredToolNames.includes(tool.name))
   );
   let toolConfig: ConverseCommandInput['toolConfig'] = {
     tools: [
@@ -257,6 +284,10 @@ const agentLoop = async (workerId: string, cancellationToken: CancellationToken)
       const toolUseRequests = toolUseMessage.content?.filter((c) => 'toolUse' in c) ?? [];
       const toolResultMessage: Message = { role: 'user', content: [] };
 
+      // Save toolUse message to DynamoDB immediately before tool execution
+      // so that page reloads can show "executing..." instead of "thinking..."
+      const savedToolUseItem = await saveToolUseMessage(workerId, toolUseMessage, outputTokenCount, detectedBudget);
+
       for (const request of toolUseRequests) {
         const toolUse = request.toolUse;
         const toolUseId = toolUse?.toolUseId;
@@ -361,16 +392,9 @@ const agentLoop = async (workerId: string, cancellationToken: CancellationToken)
         });
       }
 
-      // Save both tool use and tool result messages atomically to DynamoDB
-      // Pass response data to save token count information
-      const savedItems = await saveConversationHistoryAtomic(
-        workerId,
-        toolUseMessage,
-        toolResultMessage,
-        outputTokenCount,
-        detectedBudget
-      );
-      appendedItems.push(...savedItems);
+      // Save toolResult message to DynamoDB after all tools have been executed
+      const savedToolResultItem = await saveToolResultMessage(workerId, toolResultMessage, savedToolUseItem.SK);
+      appendedItems.push(savedToolUseItem, savedToolResultItem);
     } else {
       const mention = slackUserId ? `<@${slackUserId}> ` : '';
       const finalMessage = res.output?.message;
@@ -415,7 +439,11 @@ export const onMessageReceived = async (workerId: string, cancellationToken: Can
 export const resume = async (workerId: string, cancellationToken: CancellationToken) => {
   const { items } = await getConversationHistory(workerId);
   const lastItem = items.at(-1);
-  if (lastItem?.messageType == 'userMessage' || lastItem?.messageType == 'toolResult') {
+  if (
+    lastItem?.messageType == 'userMessage' ||
+    lastItem?.messageType == 'toolResult' ||
+    lastItem?.messageType == 'toolUse'
+  ) {
     return await onMessageReceived(workerId, cancellationToken);
   }
 };
