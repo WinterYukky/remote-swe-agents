@@ -40,11 +40,6 @@ Remote SWE エージェントによるセッション例：
 
 最小限の設定で簡単にデプロイするには、ワンクリックデプロイメントソリューションをご利用いただけます: [AWS Sample One-Click Generative AI Solutions](https://aws-samples.github.io/sample-one-click-generative-ai-solutions/)
 
-このプロジェクトはニーズに応じて2つの詳細なインストールパターンもサポートしています。要件に最も適したパターンを選択してください：
-
-- **パターンA（Webインターフェースのみ）**：webappアクセスのみのクイックセットアップ
-- **パターンB（Web + Slack統合）**：webappとSlackボット機能の両方を含む完全セットアップ
-
 ### 前提条件
 
 - Node.js（バージョン22以上）
@@ -52,96 +47,23 @@ Remote SWE エージェントによるセッション例：
 - AWS CLI
 - 適切な権限を持つAWS IAMプロファイル
 - Docker
-- GitHubアカウント
-- Slackワークスペース（パターンBのみ）
 
 ---
 
-## パターンA：Webインターフェースのみのセットアップ
+## クイックスタート
 
-このパターンは、WebインターフェースとAPIエンドポイントのみを通じてシステムにアクセスを提供します。Slack統合が不要なユーザーに最適です。
+Webインターフェースでシステムを起動します。
 
-### ステップ1：リポジトリのクローン
+### 1. リポジトリのクローン
 
 ```bash
 git clone https://github.com/aws-samples/remote-swe-agents.git
 cd remote-swe-agents
 ```
 
-### ステップ2：SSMパラメータの作成
+### 2. 環境変数のセットアップ
 
-GitHub統合のセットアップを行う前に、CDKから参照されるプレースホルダーのSSMパラメータを作成します：
-
-```bash
-aws ssm put-parameter \
-    --name /remote-swe/slack/bot-token \
-    --value "placeholder" \
-    --type String
-
-aws ssm put-parameter \
-    --name /remote-swe/slack/signing-secret \
-    --value "placeholder" \
-    --type String
-
-aws ssm put-parameter \
-    --name /remote-swe/github/personal-access-token \
-    --value "placeholder" \
-    --type String
-```
-
-### ステップ3：GitHub統合のセットアップ
-
-GitHubと連携するには、GitHub統合のセットアップが必要です。GitHub統合には2つの選択肢があります：
-
-**どちらのオプションを選ぶべきか？**
-- **Personal Access Token（オプション3A）**：個人利用や迅速なセットアップに適しています。より単純ですが、単一のユーザーアカウントに紐づけられます。
-- **GitHub App（オプション3B）**：チーム環境や組織での利用に推奨されます。より詳細な権限を提供し、個人アカウントに紐づけられません。
-
-#### オプション3A：Personal Access Token (PAT)
-
-1. [GitHub設定 > 開発者設定 > 個人アクセストークン](https://github.com/settings/tokens)にアクセス
-2. 適切なリポジトリアクセス権を持つ新しいトークン（クラシック）を生成
-   * 必要なスコープ：`repo, workflow, read:org`
-   * 許可するスコープが多いほど、エージェントがさまざまなタスクを実行できるようになります
-3. 生成したトークン文字列でSSMパラメータを更新：
-   ```bash
-   aws ssm put-parameter \
-      --name /remote-swe/github/personal-access-token \
-      --value "your-access-token" \
-      --type String \
-      --overwrite
-   ```
-
-> [!NOTE]
-> システムを複数の開発者と共有したい場合、個人の権限の悪用を防ぐために、自分のアカウントのPATを使用するのではなく、[GitHubのマシンユーザーアカウント](https://docs.github.com/en/get-started/learning-about-github/types-of-github-accounts#user-accounts)を作成することをお勧めします。
-
-#### オプション3B：GitHub App
-
-1. [GitHub設定 > 開発者設定 > GitHub Apps](https://github.com/settings/apps)にアクセス
-2. 新しいGitHub Appを作成
-3. 権限を設定し、秘密鍵を生成
-   - 必要な権限：Actions(RW)、Issues(RW)、Pull requests(RW)、Contents(RW)
-4. 秘密鍵用の[AWS Systems Manager パラメータストア](https://console.aws.amazon.com/systems-manager/parameters)のパラメータを作成
-   - このパラメータはCDKから参照されます（デフォルトのパラメータ名：`/remote-swe/github/app-private-key`）
-   ```bash
-   aws ssm put-parameter \
-      --name /remote-swe/github/app-private-key \
-      --value "$(cat your-private-key.pem)" \
-      --type String
-   ```
-5. 使用したいGitHub組織にアプリをインストール
-   - アプリをインストールした後、URL（`https://github.com/organizations/<YOUR_ORG>/settings/installations/<INSTALLATION_ID>`）からインストールIDを確認できます
-6. 以下の値をメモしておいてください：
-   - アプリID（例：12345678）
-   - インストールID（例：12345678）
-   - AWS Systems Manager パラメータストア内の秘密鍵パラメータ名
-
-> [!NOTE]
-> 現在、GitHub Appを使用する場合、単一の組織（つまり、アプリのインストール）の下のリポジトリのみを使用できます。
-
-### ステップ4：環境変数のセットアップ
-
-デプロイ前に環境変数を設定する必要があります。`cdk` ディレクトリ内にあるサンプルテンプレートから `.env.local` ファイルを作成してください：
+`cdk` ディレクトリ内にあるサンプルテンプレートから `.env.local` ファイルを作成してください：
 
 ```bash
 cd cdk
@@ -151,51 +73,62 @@ cp .env.local.example .env.local
 > [!IMPORTANT]
 > `.env.local.example` ファイルは `cdk/` ディレクトリ内にあります。デプロイ前にこのファイルをコピーして編集してください。
 
-次に、`cdk/.env.local` を編集してデプロイメントに必要な環境変数を設定します。
+`cdk/.env.local` を編集して、以下のオプション設定を行います：
 
-#### GitHub App統合
+#### Webappユーザー作成（推奨）
 
-GitHub App統合（上記のオプション3B）を使用する場合、`.env.local` ファイルに以下の変数を設定します：
-
-```sh
-GITHUB_APP_ID=your-github-app-id
-GITHUB_INSTALLATION_ID=your-github-installation-id
-```
-
-#### ワーカーインスタンス設定
-
-ワーカーインスタンスロールにアタッチする追加のマネージドポリシーを設定するには、`.env.local` ファイルに以下を記述します。AWSマネージドポリシーの名前とARN形式の両方を設定できます:
-
-```sh
-WORKER_ADDITIONAL_POLICIES=AmazonS3ReadOnlyAccess,arn:aws:iam::123456789012:policy/CustomPolicy
-```
-
-#### 既存VPCの使用
-
-新しいVPCを作成する代わりに既存のVPCを使用する場合は、`.env.local` ファイルに以下を記述してVPC IDを指定できます：
-
-```sh
-VPC_ID=vpc-12345abcdef
-```
-
-この環境変数が設定されている場合、デプロイは新しいVPCを作成せずに指定された既存のVPCを使用します。
-
-#### Webappユーザー作成
-
-デプロイ中に初期webappユーザーを自動作成するには、`.env.local` ファイルに以下を記述します：
+デプロイ中に初期webappユーザーを自動作成できます：
 
 ```sh
 INITIAL_WEBAPP_USER_EMAIL=your-email@example.com
 ```
 
-この変数が設定されている場合、デプロイ中にCognitoユーザーが作成され、指定されたメールアドレスに一時パスワードが送信されます。このメールと一時パスワードを使用してwebappにログインできます。
+設定すると、デプロイ中にCognitoユーザーが作成され、指定されたメールアドレスに一時パスワードが送信されます。
 
 この変数を設定しない場合は、後でAWS Cognitoマネジメントコンソールを通じて手動でユーザーを作成できます。[AWS管理コンソールでの新しいユーザーの作成](https://docs.aws.amazon.com/cognito/latest/developerguide/how-to-create-user-accounts.html#creating-a-new-user-using-the-console)を参照してください。
+
+#### その他のオプション設定
+
+<details>
+<summary>ワーカーインスタンス設定</summary>
+
+ワーカーインスタンスロールにアタッチする追加のマネージドポリシーを設定できます。AWSマネージドポリシーの名前とARN形式の両方を設定できます：
+
+```sh
+WORKER_ADDITIONAL_POLICIES=AmazonS3ReadOnlyAccess,arn:aws:iam::123456789012:policy/CustomPolicy
+```
+
+</details>
+
+<details>
+<summary>既存VPCの使用</summary>
+
+新しいVPCを作成する代わりに既存のVPCを使用する場合は、VPC IDを指定します：
+
+```sh
+VPC_ID=vpc-12345abcdef
+```
+
+</details>
+
+<details>
+<summary>Bedrock クロスリージョン推論</summary>
+
+クロスリージョン推論プロファイルのリージョンを選択します（デフォルト: `us`）：
+
+```sh
+BEDROCK_CRI_REGION_OVERRIDE=global  # global, us, eu, apac, jp, au から選択
+```
+
+> [!NOTE]
+> 一部のモデル（例：Opus 4.5）は `global` プロファイルが必要です。
+
+</details>
 
 > [!NOTE]
 > ここでは、GitHub Actions変数から設定を注入するために環境変数を使用しています。これが便利でない場合は、[`bin/cdk.ts`](cdk/bin/cdk.ts)内の値を直接ハードコードすることもできます。
 
-### ステップ5：CDKのデプロイ
+### 3. デプロイ
 
 ```bash
 cd cdk && npm ci
@@ -205,21 +138,88 @@ npx cdk deploy --all
 
 デプロイには通常約10分かかります。
 
-**以上です！** デプロイ後、CDKスタック出力に表示される`WebappUrl`を通じてシステムにアクセスできます。
+**以上です！** デプロイ後、CDKスタック出力に表示される`WebappUrl`を通じてwebappにアクセスできます。この時点では、WebインターフェースとAPIを通じてシステムを利用でき、エージェントはタスクを実行できますが、次のステップでGitHub連携を設定するまでGitHubへのアクセスはできません。
 
-## パターンB：Web + Slack統合のセットアップ
+---
 
-このパターンは、パターンAのすべてにSlackボット機能を追加したものです。
+## オプション：GitHub連携
 
-### ステップ1-5：まずパターンAのセットアップを完了
+エージェントがGitHubリポジトリとやり取り（クローン、PR作成など）できるようにするには、以下のいずれかのオプションを設定します。
 
-上記のパターンAのすべてのステップに従って、基本システムを動作させます。
+**どちらのオプションを選ぶべきか？**
+- **Personal Access Token（オプションA）**：個人利用向けのシンプルなセットアップ。単一のユーザーアカウントに紐づけられます。
+- **GitHub App（オプションB）**：チームや組織での利用に推奨。より詳細な権限設定が可能で、個人アカウントに紐づけられません。
 
-### ステップ6：Slackアプリのセットアップ
+### オプションA：Personal Access Token (PAT)
 
-ここでは、Slackインターフェースを通じてエージェントを制御するためのSlackアプリを設定する必要があります。
+1. [GitHub設定 > 開発者設定 > 個人アクセストークン](https://github.com/settings/tokens)にアクセス
+2. 適切なリポジトリアクセス権を持つ新しいトークン（クラシック）を生成
+   * 必要なスコープ：`repo, workflow, read:org`
+   * 許可するスコープが多いほど、エージェントがさまざまなタスクを実行できます
+3. 生成したトークン文字列でSSMパラメータを作成（`$TARGET_ENV` はデプロイ環境名、例: `Sandbox`）：
+   ```bash
+   aws ssm put-parameter \
+      --name /remote-swe/$TARGET_ENV/github/personal-access-token \
+      --value "your-access-token" \
+      --type String
+   ```
+4. `cdk/bin/cdk.ts` のスタックpropsにGitHub設定を追加：
+   ```typescript
+   github: {
+     personalAccessTokenParameterName: `/remote-swe/${targetEnv}/github/personal-access-token`,
+   },
+   ```
 
-#### Slackアプリの作成
+> [!NOTE]
+> システムを複数の開発者と共有したい場合、個人の権限の悪用を防ぐために、自分のアカウントのPATを使用するのではなく、[GitHubのマシンユーザーアカウント](https://docs.github.com/en/get-started/learning-about-github/types-of-github-accounts#user-accounts)を作成することをお勧めします。
+
+### オプションB：GitHub App
+
+1. [GitHub設定 > 開発者設定 > GitHub Apps](https://github.com/settings/apps)にアクセス
+2. 新しいGitHub Appを作成
+3. 権限を設定し、秘密鍵を生成
+   - 必要な権限：Actions(RW)、Issues(RW)、Pull requests(RW)、Contents(RW)
+4. 秘密鍵用のSSMパラメータを作成（`$TARGET_ENV` はデプロイ環境名）：
+   ```bash
+   aws ssm put-parameter \
+      --name /remote-swe/$TARGET_ENV/github/app-private-key \
+      --value "$(cat your-private-key.pem)" \
+      --type String
+   ```
+5. 使用したいGitHub組織にアプリをインストール
+   - アプリをインストールした後、URL（`https://github.com/organizations/<YOUR_ORG>/settings/installations/<INSTALLATION_ID>`）からインストールIDを確認できます
+6. `cdk/.env.local` に以下の環境変数を設定：
+   ```sh
+   GITHUB_APP_ID=your-github-app-id
+   GITHUB_INSTALLATION_ID=your-github-installation-id
+   ```
+7. `cdk/bin/cdk.ts` のスタックpropsにGitHub設定を追加：
+   ```typescript
+   github: {
+     privateKeyParameterName: `/remote-swe/${targetEnv}/github/app-private-key`,
+     appId: process.env.GITHUB_APP_ID!,
+     installationId: process.env.GITHUB_INSTALLATION_ID!,
+   },
+   ```
+
+> [!NOTE]
+> 現在、GitHub Appを使用する場合、単一の組織（つまり、アプリのインストール）の下のリポジトリのみを使用できます。
+
+### 再デプロイ
+
+GitHub連携を設定した後、再デプロイします：
+
+```bash
+cd cdk && npx cdk deploy --all
+```
+
+---
+
+## オプション：Slack連携
+
+Slackボット機能を有効にして、Slackから直接エージェントとやり取りできるようにします。
+
+### Slackアプリの作成
 
 1. [Slack Appsダッシュボード](https://api.slack.com/apps)にアクセス
 2. 「Create New App」（新しいアプリを作成）をクリック
@@ -227,61 +227,62 @@ npx cdk deploy --all
 4. 提供されているSlackアプリのマニフェストYAMLファイルを使用：[manifest.json](./resources/slack-app-manifest.json)
    - Slackワークスペース管理者がより広い権限をボットに付与することを許可している場合は、[slack-app-manifest-relaxed.json](./resources/slack-app-manifest-relaxed.json)も利用できます。これを使うと、botにメンションをしなくても、Slackスレッド内でエージェントと会話することができます。
    - エンドポイントURL（`https://redacted.execute-api.us-east-1.amazonaws.com`）を実際のURLに置き換えてください
-   - 実際のURLはCDKデプロイメント出力の`SlackBoltEndpointUrl`で確認できます
+   - 実際のURLはCDKデプロイメント出力の`SlackBoltEndpointUrl`で確認できます（Slack有効化デプロイ後）
+   - **注意:** Slack有効化の初回デプロイ後にこのURLを更新する必要があります
 5. 以下の値を必ずメモしておいてください：
    - 署名シークレット（Basic Informationで確認可能）
    - ボットトークン（OAuth & Permissions内、ワークスペースにインストール後に確認可能）
 
 詳細については、こちらのドキュメントを参照してください：[マニフェストでアプリを作成および設定する](https://api.slack.com/reference/manifests)
 
-> [!NOTE]
-> 共有（個人ではなく）Slackワークスペースを使用している場合は、エージェントへのアクセスを制御するために`SLACK_ADMIN_USER_ID_LIST`環境変数（以下を参照）の設定を検討してください。この制限がないと、ワークスペース内の誰でもエージェントにアクセスでき、潜在的にあなたのGitHubコンテンツにもアクセスできてしまいます。
+### Slack用SSMパラメータの作成
 
-#### Slack用SSMパラメータの更新
-
-Slackアプリを作成した後、以下のコマンドでAWSアカウントにシークレットを登録します：
+SlackのシークレットをAWSアカウントに登録します（`$TARGET_ENV` はデプロイ環境名）：
 
 ```bash
 aws ssm put-parameter \
-    --name /remote-swe/slack/bot-token \
+    --name /remote-swe/$TARGET_ENV/slack/bot-token \
     --value "your-slack-bot-token" \
-    --type String \
-    --overwrite
+    --type String
 
 aws ssm put-parameter \
-    --name /remote-swe/slack/signing-secret \
+    --name /remote-swe/$TARGET_ENV/slack/signing-secret \
     --value "your-slack-signing-secret" \
-    --type String \
-    --overwrite
+    --type String
 ```
 
-`your-slack-bot-token`と`your-slack-signing-secret`を、前のステップで取得した実際の値に置き換えてください。これらのパラメータはCDKから参照されます。
+### CDK設定の更新
 
-### ステップ7：（オプション）Slackからのシステムアクセス制限
+`cdk/bin/cdk.ts` のスタックpropsにSlack設定を追加：
 
-Slackワークスペース内のどのメンバーがエージェントにアクセスできるかを制御するには、`.env.local` ファイルにSlackユーザーIDのカンマ区切りリストを記述します：
+```typescript
+slack: {
+  botTokenParameterName: `/remote-swe/${targetEnv}/slack/bot-token`,
+  signingSecretParameterName: `/remote-swe/${targetEnv}/slack/signing-secret`,
+},
+```
 
-メンバーのSlackユーザーIDを取得するには、[これらの指示](https://www.google.com/search?q=copy+member+id+slack)に従ってください。
+#### （オプション）Slackからのアクセス制限
+
+Slackワークスペース内のどのメンバーがエージェントにアクセスできるかを制御するには、`cdk/.env.local` にSlackユーザーIDのカンマ区切りリストを記述します：
 
 ```sh
 SLACK_ADMIN_USER_ID_LIST=U123ABC456,U789XYZ012
 ```
 
-指定されたユーザーID以外のすべてのユーザーは、Slackアプリへのアクセスを試みると「Unauthorized」エラーを受け取ります。
+> [!NOTE]
+> 共有（個人ではなく）Slackワークスペースを使用している場合は、エージェントへのアクセスを制御するために`SLACK_ADMIN_USER_ID_LIST`の設定を推奨します。この制限がないと、ワークスペース内の誰でもエージェントにアクセスでき、潜在的にあなたのGitHubコンテンツにもアクセスできてしまいます。
 
 > [!NOTE]
-> ユーザーにアプリへのアクセス権を付与するには、`approve_user`メッセージとユーザーのメンションをアプリでメンションします。例：`@remote-swe approve_user @Alice @Bob @Carol`
+> デプロイ後にユーザーにアプリへのアクセス権を付与するには、`approve_user`メッセージとユーザーのメンションをアプリでメンションします。例：`@remote-swe approve_user @Alice @Bob @Carol`
 
-### ステップ8：Slack統合でCDKを再デプロイ
-
-上記のセットアップが完了したら、`cdk deploy`を再度実行します。
+### 再デプロイ
 
 ```bash
-cd cdk
-npx cdk deploy --all
+cd cdk && npx cdk deploy --all
 ```
 
-**完了です！** これでWebインターフェースとSlackボット機能の両方にアクセスできます。
+**完了です！** これでWebインターフェースに加えてSlackボット機能も利用できます。
 
 ---
 
@@ -295,7 +296,7 @@ npx cdk deploy --all
    - コスト分析とシステム使用状況の確認
    - 画像のアップロードと設定管理
 
-2. **Slackインターフェース**：Slackアプリをメンションするだけで、エージェントにタスクを割り当て開始
+2. **Slackインターフェース**（設定済みの場合）：Slackアプリをメンションするだけで、エージェントにタスクを割り当て開始
    - Slackワークスペースとの直接統合
    - エージェントとのスレッドベースの会話
    - リアルタイムの進捗更新
@@ -305,7 +306,7 @@ npx cdk deploy --all
    - 自動化されたワークフローとCI/CD統合
    - カスタムアプリケーションの開発
 
-4. **GitHub Actions統合**：GitHub Actionsを使用してリポジトリと統合
+4. **GitHub Actions統合**（GitHub設定済みの場合）：GitHub Actionsを使用してリポジトリと統合
    - GitHub イベントからエージェントを自動的にトリガー
    - issue コメントやアサインメントに対応
    - シームレスなCI/CD統合
