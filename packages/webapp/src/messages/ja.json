@@ -51,11 +51,11 @@
     "agentStartingMessage": "AIエージェントが起動中です。最大で2分ほどかかる場合があります。しばらくお待ちください...",
     "aiAgentResponding": "{agentName}が思考中...",
     "enterYourMessage": "メッセージを入力...",
-    "waitingForImageUpload": "画像アップロード中...",
+    "waitingForImageUpload": "アップロード中...",
     "noSessionsFound": "セッションが見つかりません",
     "createSessionToStart": "AIエージェントとチャットするには新規セッションを作成してください",
     "usingTool": "ツール使用",
-    "eventTriggerFired": "イベントトリガー",
+    "eventTriggerFired": "イベント検知",
     "executing": "実行中...",
     "showRawJson": "JSONを表示",
     "hideRawJson": "JSONを隠す",
@@ -92,6 +92,7 @@
     "sortDesc": "降順",
     "hideCompleted": "完了済みを非表示",
     "attachImage": "画像を添付",
+    "attachFile": "ファイルを添付",
     "thinkingBudget": "思考予算",
     "defaultThinkingBudget": "デフォルト",
     "ultrathinkInstruction": "メッセージにultrathinkと入力することで、最大の思考予算を付与します",
@@ -115,12 +116,18 @@
     "cancel": "キャンセル",
     "sessionActions": "操作",
     "goToSessionList": "セッション一覧を表示",
+    "markAllRead": "すべて既読にする",
     "toggleSidebar": "サイドバーの表示切替",
     "stopSession": "セッションを停止",
     "stopSessionSuccess": "セッションを停止しました",
     "stopSessionError": "セッションの停止に失敗しました",
     "newMessages": "新着メッセージ",
-    "showOlderMessages": "{count}件の古いメッセージを表示"
+    "showOlderMessages": "{count}件の古いメッセージを表示",
+    "childSessions": "子セッション {count}件",
+    "viewChildSession": "詳細を見る",
+    "viewSession": "表示",
+    "deleteGroup": "グループ削除",
+    "deleteGroupConfirm": "このセッションと{count}件の子セッションを削除しますか？この操作は取り消せません。"
   },
   "home": {
     "title": "Remote SWE Agents へようこそ",
@@ -200,7 +207,7 @@
     "createSessionButton": "セッションを作成して会話を開始",
     "addImage": "画像を追加",
     "imagesCount": "{count} 枚の画像",
-    "waitingForImageUpload": "画像アップロード中...",
+    "waitingForImageUpload": "アップロード中...",
     "templates": "テンプレート",
     "modelOverride": "モデル",
     "customAgent": "カスタムエージェント",
@@ -253,7 +260,16 @@
     "defaultAgentNameDescription": "デフォルトエージェントのカスタム名。ヘッダー、ブラウザタブ、PWAアプリ名に使用されます。",
     "defaultAgentIcon": "デフォルトエージェントアイコン",
     "defaultAgentIconDescription": "デフォルトエージェントのカスタムアイコン。ファビコン、PWAアプリアイコン、チャットアバターとして使用されます。",
-    "save": "保存"
+    "save": "保存",
+    "pushNotifications": {
+      "title": "プッシュ通知",
+      "description": "エージェントの応答に対するブラウザプッシュ通知を設定",
+      "enable": "プッシュ通知を有効にする",
+      "disable": "プッシュ通知を無効にする",
+      "enabled": "プッシュ通知は有効です",
+      "disabled": "プッシュ通知は無効です",
+      "notSupported": "このブラウザではプッシュ通知はサポートされていません"
+    }
   },
   "api_settings": {
     "title": "APIキー",
@@ -340,7 +356,6 @@
         "label": "システムプロンプト",
         "placeholder": "あなたは〜を専門とするアシスタントです...",
         "description": "エージェントの動作、専門性、応答スタイルを定義",
-        "useDefault": "デフォルトのシステムプロンプトを利用",
         "includeDefaultKnowledge": "デフォルトのSWEナレッジを含める（コミュニケーションスタイル、Gitワークフロー、コーディング規約など）"
       },
       "tools": {
@@ -385,6 +400,22 @@
     "subscribeFailed": "プッシュ通知の有効化に失敗しました",
     "unsubscribeFailed": "プッシュ通知の無効化に失敗しました",
     "permissionDenied": "通知の権限が拒否されました",
-    "notConfigured": "このサーバーではプッシュ通知が設定されていません"
+    "notConfigured": "このサーバーではプッシュ通知が設定されていません",
+    "center": {
+      "title": "通知",
+      "noUnread": "未読の通知はありません",
+      "markAllRead": "すべて既読にする",
+      "unreadCount": "{count}件の未読",
+      "pending": "応答待ち",
+      "enablePushBanner": "プッシュ通知が無効です。",
+      "enablePushLink": "設定で有効にする",
+      "openSession": "セッションを開く"
+    },
+    "banner": {
+      "title": "通知を受け取ろう",
+      "description": "プッシュ通知を有効にすると、エージェントが応答した時にお知らせします。",
+      "enable": "有効にする",
+      "later": "あとで"
+    }
   }
 }

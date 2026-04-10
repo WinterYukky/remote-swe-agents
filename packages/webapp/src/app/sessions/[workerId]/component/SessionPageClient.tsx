@@ -7,6 +7,7 @@ import { useScrollPosition } from '@/hooks/use-scroll-position';
 import Link from 'next/link';
 import { useAction } from 'next-safe-action/hooks';
 import { updateAgentStatus, sendEventToAgent, stopSession, markSessionReadAction } from '../actions';
+import { markAllReadAction } from '@/actions/badge/action';
 import { useEventBus } from '@/hooks/use-event-bus';
 import MessageForm from './MessageForm';
 import MessageList, { MessageView } from './MessageList';
@@ -49,6 +50,8 @@ interface SessionPageClientProps {
   agentName?: string;
   unreadMap?: Record<string, { unreadCount: number; hasPending: boolean }>;
   lastReadAt?: number;
+  childSessions?: { workerId: string; title?: string }[];
+  parentSessionId?: string;
 }
 
 export default function SessionPageClient({
@@ -64,6 +67,7 @@ export default function SessionPageClient({
   agentName,
   unreadMap,
   lastReadAt,
+  parentSessionId,
 }: SessionPageClientProps) {
   const t = useTranslations('sessions');
   const router = useRouter();
@@ -117,6 +121,9 @@ export default function SessionPageClient({
           badge: data.badge,
         });
       }
+
+      // Notify NotificationCenter to re-fetch
+      window.dispatchEvent(new CustomEvent('session-read'));
     },
   });
 
@@ -124,6 +131,22 @@ export default function SessionPageClient({
   useEffect(() => {
     executeMarkRead({ workerId });
   }, [workerId]);
+
+  // Mark all sessions as read
+  const { execute: executeMarkAllRead, isExecuting: isMarkingAllRead } = useAction(markAllReadAction, {
+    onSuccess: ({ data }) => {
+      setCurrentUnreadMap({});
+      window.dispatchEvent(new CustomEvent('session-read'));
+
+      // Clear OS badge
+      if (data?.badge && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.controller.postMessage({
+          type: 'UPDATE_BADGE',
+          badge: data.badge,
+        });
+      }
+    },
+  });
 
   // Setup event handler for Escape key press to force stop agent work
   const { execute: sendEvent } = useAction(sendEventToAgent, {
@@ -188,6 +211,9 @@ export default function SessionPageClient({
 
         // Mark session as read since user is viewing it
         if (event.type === 'message' || event.type === 'toolUse') {
+          executeMarkRead({ workerId });
+        }
+        if (event.type === 'agentStatusUpdate' && event.status === 'pending') {
           executeMarkRead({ workerId });
         }
 
@@ -291,6 +317,8 @@ export default function SessionPageClient({
                   thinkingBudget: event.thinkingBudget,
                 },
               ]);
+            } else if (['sendMessageToAgent', 'acknowledgeAgent'].includes(event.toolName)) {
+              // Agent-to-agent tools are silent in local view; shown via agentMessage events on parent
             } else {
               setMessages((prev) => [
                 ...prev,
@@ -311,6 +339,23 @@ export default function SessionPageClient({
               refetchTodoList({ workerId });
             }
 
+            break;
+          case 'agentMessage':
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: `agent-msg-${event.timestamp}`,
+                role: 'user',
+                content: event.message,
+                timestamp: new Date(event.timestamp),
+                type: 'agentMessage',
+                senderSessionId: event.senderSessionId,
+                senderAgentName: event.senderName,
+                targetSessionId: event.targetSessionId,
+                targetAgentName: event.targetName,
+                isAcknowledge: event.acknowledge,
+              },
+            ]);
             break;
         }
       },
@@ -373,6 +418,23 @@ export default function SessionPageClient({
         isOpen={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         unreadMap={currentUnreadMap}
+        onUnreadIncrement={useCallback(
+          (eventWorkerId: string) => {
+            setCurrentUnreadMap((prev) => {
+              const current = prev[eventWorkerId] ?? { unreadCount: 0, hasPending: false };
+              return {
+                ...prev,
+                [eventWorkerId]: {
+                  ...current,
+                  unreadCount: current.unreadCount + 1,
+                },
+              };
+            });
+          },
+          []
+        )}
+        onMarkAllRead={useCallback(() => executeMarkAllRead({}), [executeMarkAllRead])}
+        isMarkingAllRead={isMarkingAllRead}
       />
 
       {/* Main content */}
@@ -385,10 +447,17 @@ export default function SessionPageClient({
                 {/* Sidebar toggle (hamburger on mobile, hidden on lg) */}
                 <button
                   onClick={() => setSidebarOpen(true)}
-                  className="inline-flex items-center p-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer lg:hidden"
+                  className="relative inline-flex items-center p-1 rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors cursor-pointer lg:hidden"
                   title={t('toggleSidebar')}
                 >
                   <Menu className="w-5 h-5" />
+                  {Object.values(currentUnreadMap).reduce((sum, v) => sum + v.unreadCount, 0) > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                      {Object.values(currentUnreadMap).reduce((sum, v) => sum + v.unreadCount, 0) > 99
+                        ? '99+'
+                        : Object.values(currentUnreadMap).reduce((sum, v) => sum + v.unreadCount, 0)}
+                    </span>
+                  )}
                 </button>
                 <h1 className="text-base sm:text-lg font-medium sm:font-semibold text-gray-900 dark:text-white truncate min-w-0">
                   {sessionTitle || workerId}

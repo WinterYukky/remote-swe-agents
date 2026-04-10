@@ -51,11 +51,11 @@
     "agentStartingMessage": "The AI agent is starting up. This may take up to 2 minutes. Please wait...",
     "aiAgentResponding": "{agentName} is thinking...",
     "enterYourMessage": "Enter your message...",
-    "waitingForImageUpload": "Waiting for image upload...",
+    "waitingForImageUpload": "Waiting for upload...",
     "noSessionsFound": "No sessions found",
     "createSessionToStart": "Create a new session to start chatting with AI agents",
     "usingTool": "Using Tool",
-    "eventTriggerFired": "Event Trigger",
+    "eventTriggerFired": "Event Detected",
     "executing": "Executing...",
     "showRawJson": "Show raw JSON",
     "hideRawJson": "Hide raw JSON",
@@ -92,6 +92,7 @@
     "sortDesc": "Descending",
     "hideCompleted": "Hide completed",
     "attachImage": "Attach image",
+    "attachFile": "Attach file",
     "thinkingBudget": "Thinking Budget",
     "defaultThinkingBudget": "Default",
     "ultrathinkInstruction": "Include 'ultrathink' in your message to grant maximum thinking budget",
@@ -115,12 +116,18 @@
     "cancel": "Cancel",
     "sessionActions": "Actions",
     "goToSessionList": "View All Sessions",
+    "markAllRead": "Mark all as read",
     "toggleSidebar": "Toggle sidebar",
     "stopSession": "Stop Session",
     "stopSessionSuccess": "Session stopped",
     "stopSessionError": "Failed to stop session",
     "newMessages": "New Messages",
-    "showOlderMessages": "Show {count} older messages"
+    "showOlderMessages": "Show {count} older messages",
+    "childSessions": "{count} child sessions",
+    "viewChildSession": "View details",
+    "viewSession": "View",
+    "deleteGroup": "Delete Group",
+    "deleteGroupConfirm": "Are you sure you want to delete this session and its {count} child sessions? This action cannot be undone."
   },
   "home": {
     "title": "Welcome to Remote SWE Agents",
@@ -201,7 +208,7 @@
     "createSessionButton": "Create Session & Start Conversation",
     "addImage": "Add Image",
     "imagesCount": "{count} images",
-    "waitingForImageUpload": "Waiting for image upload...",
+    "waitingForImageUpload": "Waiting for upload...",
     "templates": "Templates",
     "modelOverride": "Model",
     "customAgent": "Custom Agent",
@@ -254,7 +261,16 @@
     "defaultAgentNameDescription": "Custom name for the default agent. Used in the header, browser tab, and PWA app name.",
     "defaultAgentIcon": "Default Agent Icon",
     "defaultAgentIconDescription": "Custom icon for the default agent. Used as favicon, PWA app icon, and chat avatar.",
-    "save": "Save"
+    "save": "Save",
+    "pushNotifications": {
+      "title": "Push Notifications",
+      "description": "Configure browser push notifications for agent responses",
+      "enable": "Enable push notifications",
+      "disable": "Disable push notifications",
+      "enabled": "Push notifications are enabled",
+      "disabled": "Push notifications are disabled",
+      "notSupported": "Push notifications are not supported in this browser"
+    }
   },
   "api_settings": {
     "title": "API Keys",
@@ -341,7 +357,6 @@
         "label": "System Prompt",
         "placeholder": "You are a helpful assistant specialized in...",
         "description": "Define the agent's behavior, expertise, and response style",
-        "useDefault": "Use default system prompt",
         "includeDefaultKnowledge": "Include default SWE knowledge (communication style, Git workflow, coding conventions, etc.)"
       },
       "tools": {
@@ -386,6 +401,22 @@
     "subscribeFailed": "Failed to enable push notifications",
     "unsubscribeFailed": "Failed to disable push notifications",
     "permissionDenied": "Notification permission was denied",
-    "notConfigured": "Push notifications are not configured on this server"
+    "notConfigured": "Push notifications are not configured on this server",
+    "center": {
+      "title": "Notifications",
+      "noUnread": "No unread notifications",
+      "markAllRead": "Mark all as read",
+      "unreadCount": "{count} unread",
+      "pending": "Pending response",
+      "enablePushBanner": "Push notifications are disabled.",
+      "enablePushLink": "Enable in Preferences",
+      "openSession": "Open session"
+    },
+    "banner": {
+      "title": "Stay updated",
+      "description": "Enable push notifications to get notified when agents respond.",
+      "enable": "Enable",
+      "later": "Later"
+    }
   }
 }
