@@ -1,3 +1,32 @@
+# Automatically regenerates lockfiles when Dependabot bumps dependencies
+# in this npm-workspaces monorepo.
+#
+# Why this is needed:
+# Dependabot updates individual workspace package.json files but does not
+# always regenerate the root lockfile correctly in npm workspaces monorepos,
+# causing CI failures due to lockfile-package.json mismatches.
+#
+# Scope:
+# - Root package-lock.json: covers all workspaces under packages/*
+# - cdk/package-lock.json: cdk/ is a standalone project with its own lockfile
+#   (not part of the root npm workspaces). Regenerated unconditionally since
+#   the operation is idempotent when cdk/package.json is unchanged.
+#
+# Security model:
+# - Uses pull_request_target to obtain write permissions (dependabot PRs
+#   receive a read-only GITHUB_TOKEN on the regular pull_request event).
+# - Restricted to github.actor == 'dependabot[bot]' — only dependabot PRs
+#   trigger this workflow.
+# - Dependabot branches live in the same repository (not forks), so the
+#   checkout does NOT introduce a pwn-request vector.
+# - npm install uses --ignore-scripts as defense-in-depth to prevent
+#   execution of any lifecycle scripts from the checked-out code.
+#
+# Infinite loop prevention:
+# - The paths filter only matches **/package.json changes.
+# - The commit is pushed by github-actions[bot], so the actor check
+#   (dependabot[bot]) prevents this workflow from re-triggering itself.
+
 name: Dependabot Lockfile Fix
 
 on:
@@ -26,22 +55,26 @@ jobs:
           node-version: "22.x"
 
       - name: Regenerate root lockfile
-        run: npm install --package-lock-only
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Regenerate cdk lockfile
+        run: npm install --package-lock-only --ignore-scripts
+        working-directory: ./cdk
 
       - name: Check for lockfile changes
         id: diff
         run: |
-          if git diff --exit-code package-lock.json; then
+          if git diff --exit-code package-lock.json cdk/package-lock.json; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Commit and push updated lockfile
+      - name: Commit and push updated lockfiles
         if: steps.diff.outputs.changed == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package-lock.json
-          git commit -m "chore: regenerate package-lock.json for workspace consistency"
+          git add package-lock.json cdk/package-lock.json
+          git commit -m "chore: regenerate lockfiles for workspace consistency"
           git push
