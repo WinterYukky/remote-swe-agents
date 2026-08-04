@@ -15,17 +15,28 @@
 # Security model:
 # - Uses pull_request_target to obtain write permissions (dependabot PRs
 #   receive a read-only GITHUB_TOKEN on the regular pull_request event).
-# - Restricted to github.actor == 'dependabot[bot]' — only dependabot PRs
-#   trigger this workflow.
-# - Dependabot branches live in the same repository (not forks), so the
-#   checkout does NOT introduce a pwn-request vector.
+# - Restricted to github.actor == 'dependabot[bot]' AND same-repository
+#   check (head.repo.full_name == repository). This means:
+#   - Only dependabot can trigger the workflow (actor gate)
+#   - Only same-repo branches are processed (no fork-based attack vector)
+#   - To abuse this workflow, an attacker would already need write access to
+#     the repository — no privilege escalation is possible.
+# - Checkout uses the exact HEAD SHA (not branch ref) to prevent TOCTOU
+#   race conditions.
 # - npm install uses --ignore-scripts as defense-in-depth to prevent
-#   execution of any lifecycle scripts from the checked-out code.
+#   execution of any lifecycle scripts (e.g. git dependency prepare scripts).
+#
+# CI trigger behavior:
+# - If LOCKFILE_FIX_TOKEN secret is configured (PAT or GitHub App token with
+#   contents:write), the push uses that token and WILL trigger CI workflows.
+# - If the secret is not set, falls back to GITHUB_TOKEN — the lockfile is
+#   still fixed but CI won't re-run automatically (GitHub's recursive workflow
+#   prevention). Maintainers should configure the secret for full functionality.
 #
 # Infinite loop prevention:
 # - The paths filter only matches **/package.json changes.
-# - The commit is pushed by github-actions[bot], so the actor check
-#   (dependabot[bot]) prevents this workflow from re-triggering itself.
+# - The commit is pushed by a non-dependabot actor (github-actions[bot] or the
+#   PAT/App identity), so the actor gate (dependabot[bot]) blocks re-trigger.
 
 name: Dependabot Lockfile Fix
 
@@ -38,16 +49,22 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: dependabot-lockfile-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   fix-lockfile:
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    if: >-
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - name: Checkout PR branch
+      - name: Checkout PR HEAD (pinned to SHA)
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 1
+          ref: ${{ github.event.pull_request.head.sha }}
+          token: ${{ secrets.LOCKFILE_FIX_TOKEN || github.token }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -72,9 +89,11 @@ jobs:
 
       - name: Commit and push updated lockfiles
         if: steps.diff.outputs.changed == 'true'
+        env:
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package-lock.json cdk/package-lock.json
           git commit -m "chore: regenerate lockfiles for workspace consistency"
-          git push
+          git push origin "HEAD:refs/heads/${PR_HEAD_REF}"
