@@ -9,6 +9,8 @@ import { useTheme } from 'next-themes';
 import type { PluggableList } from 'unified';
 import { MermaidDiagram } from './MermaidDiagram';
 import { KatexScrollContainer } from './KatexScrollContainer';
+import { usePortMapping } from './PortMappingContext';
+import { rewriteMdastLocalhostUrls, type MdastNode, type PortMapping } from '@/lib/port-url-transform';
 import { escapePriceDollars } from '@/lib/escape-price-dollars';
 
 type MarkdownRendererProps = {
@@ -25,6 +27,22 @@ type MarkdownRendererProps = {
 const REHYPE_KATEX_OPTIONS = {
   errorColor: 'currentColor',
 } as const;
+
+/**
+ * remark plugin that, when the given ref holds a mapping, rewrites
+ * localhost:PORT references inside text nodes into link nodes. The walker
+ * itself lives in `@/lib/port-url-transform` so it can be unit-tested with
+ * hand-written mdast fragments (no React / react-markdown needed).
+ *
+ * The mapping is read through a ref so a fresh plugin instance doesn't have
+ * to be built every time the port mapping updates — callers can keep a
+ * stable plugin array across renders.
+ */
+function remarkRewriteLocalhostUrls(mappingRef: React.RefObject<PortMapping | null>) {
+  return () => (tree: unknown) => {
+    rewriteMdastLocalhostUrls(tree as MdastNode, mappingRef.current);
+  };
+}
 
 function containsKatex(children: React.ReactNode): boolean {
   return React.Children.toArray(children).some((child) => {
@@ -46,6 +64,17 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
   React.useEffect(() => {
     setMounted(true);
   }, []);
+  const portMapping = usePortMapping();
+  const portMappingRef = React.useRef<PortMapping | null>(portMapping);
+  // Keep the ref in sync with the latest mapping. React.memo'd renderers
+  // whose `content` hasn't changed will NOT re-parse even when the mapping
+  // updates — but that's OK in practice: the mapping only changes on
+  // openPort/closePort, and fresh renders triggered by the context update
+  // in the parent tree will pick up the new links. The alternative of
+  // memoizing on [portMapping] would rebuild the plugin array (and thus
+  // force re-parse of every message) each time the mapping changes, which
+  // is wasteful when chat history is long.
+  portMappingRef.current = portMapping;
   const codeStyle =
     mounted && resolvedTheme === 'dark'
       ? oneDark
@@ -55,7 +84,12 @@ export const MarkdownRenderer = React.memo(function MarkdownRenderer({ content }
           'code[class*="language-"]': { ...oneLight['code[class*="language-"]'], background: '#e5e7eb' },
         };
 
-  const remarkPlugins = React.useMemo<PluggableList>(() => [remarkGfm, remarkMath], []);
+  // Stable plugin array: the localhost-rewriter reads the current mapping
+  // through `portMappingRef`, so the array itself never needs to change.
+  const remarkPlugins = React.useMemo<PluggableList>(
+    () => [remarkGfm, remarkMath, remarkRewriteLocalhostUrls(portMappingRef)],
+    []
+  );
   const rehypePlugins = React.useMemo<PluggableList>(() => [[rehypeKatex, REHYPE_KATEX_OPTIONS]], []);
 
   const processedContent = React.useMemo(() => escapePriceDollars(content), [content]);

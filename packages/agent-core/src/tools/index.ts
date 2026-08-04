@@ -17,6 +17,7 @@ export * from './wait-for';
 export * from './read-image';
 export * from './todo';
 export * from './session-title';
+export * from './port';
 
 import { ciTool } from './ci';
 import { commandExecutionTool } from './command-execution';
@@ -35,6 +36,7 @@ import { confirmSendToUserTool } from './confirm-send-to-user';
 import { readImageTool } from './read-image';
 import { todoInitTool, todoUpdateTool } from './todo';
 import { updateSessionTitleTool } from './session-title';
+import { openPortTool, closePortTool } from './port';
 import { waitForConditionTool } from './wait-for';
 
 /**
@@ -67,6 +69,11 @@ export const requiredTools = [
  * Required tool names for filtering convenience.
  */
 export const requiredToolNames = requiredTools.map((tool) => tool.name);
+
+/**
+ * Port tools that are only available on EC2 runtime with SECURITY_GROUP_ID configured.
+ */
+export const portTools = process.env.SECURITY_GROUP_ID ? [openPortTool, closePortTool] : [];
 
 /**
  * Optional tools that users can select in the custom agent configuration.

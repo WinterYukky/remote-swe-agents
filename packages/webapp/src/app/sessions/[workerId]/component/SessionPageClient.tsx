@@ -36,6 +36,8 @@ import TakeOverModal from './TakeOverModal';
 import SessionSidebar from './SessionSidebar';
 import { ArrowLeft } from 'lucide-react';
 import { useSwipeGesture } from '@/hooks/use-swipe-gesture';
+import { PortMappingProvider, usePortMappingSetter } from './PortMappingContext';
+import type { PortMapping } from '@/lib/port-url-transform';
 
 interface SessionPageClientProps {
   workerId: string;
@@ -53,6 +55,7 @@ interface SessionPageClientProps {
   lastReadAt?: number;
   childSessions?: { workerId: string; title?: string }[];
   parentSessionId?: string;
+  initialPortMapping?: PortMapping | null;
 }
 
 export default function SessionPageClient({
@@ -70,7 +73,46 @@ export default function SessionPageClient({
   unreadMap,
   lastReadAt,
   parentSessionId,
+  initialPortMapping,
 }: SessionPageClientProps) {
+  return (
+    <PortMappingProvider initialMapping={initialPortMapping ?? null}>
+      <SessionPageClientInner
+        workerId={workerId}
+        userId={userId}
+        preferences={preferences}
+        initialTitle={initialTitle}
+        initialMessages={initialMessages}
+        initialInstanceStatus={initialInstanceStatus}
+        initialAgentStatus={initialAgentStatus}
+        initialTodoList={initialTodoList}
+        allSessions={allSessions}
+        agentIconUrl={agentIconUrl}
+        agentName={agentName}
+        unreadMap={unreadMap}
+        lastReadAt={lastReadAt}
+        parentSessionId={parentSessionId}
+      />
+    </PortMappingProvider>
+  );
+}
+
+function SessionPageClientInner({
+  workerId,
+  userId,
+  preferences,
+  initialTitle,
+  initialMessages,
+  initialInstanceStatus,
+  initialAgentStatus,
+  initialTodoList,
+  allSessions,
+  agentIconUrl,
+  agentName,
+  unreadMap,
+  lastReadAt,
+  parentSessionId,
+}: Omit<SessionPageClientProps, 'initialPortMapping'>) {
   const t = useTranslations('sessions');
   const router = useRouter();
   const [messages, setMessages] = useState<MessageView[]>(initialMessages);
@@ -100,6 +142,7 @@ export default function SessionPageClient({
   const [showShareModal, setShowShareModal] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [currentUnreadMap, setCurrentUnreadMap] = useState(unreadMap ?? {});
+  const setPortMapping = usePortMappingSetter();
   const { isBottom, isHeaderVisible } = useScrollPosition();
 
   useSwipeGesture({
@@ -358,6 +401,13 @@ export default function SessionPageClient({
                 isAcknowledge: event.acknowledge,
               },
             ]);
+            break;
+          case 'portsUpdate':
+            if (setPortMapping) {
+              setPortMapping(
+                event.hostname ? { hostname: event.hostname, openedPorts: event.openedPorts ?? [] } : null
+              );
+            }
             break;
         }
       },

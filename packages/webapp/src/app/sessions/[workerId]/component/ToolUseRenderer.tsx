@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { Settings, Code, Terminal, Bell, ChevronRight, ChevronDown, Pause } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { usePortMapping } from './PortMappingContext';
+import { findPortMatches } from '@/lib/port-url-transform';
 
 type ToolUseRendererProps = {
   content: string;
@@ -8,6 +10,43 @@ type ToolUseRendererProps = {
   output: string | undefined;
   messageId: string;
   onInterrupt?: () => void;
+};
+
+/**
+ * Render a plain-text block while turning any `localhost:PORT` / `127.0.0.1:PORT`
+ * references that point at currently opened ports into clickable links.
+ */
+const LinkifiedText = ({ text }: { text: string }) => {
+  const mapping = usePortMapping();
+  const matches = React.useMemo(() => findPortMatches(text, mapping).filter((m) => m.replacement), [text, mapping]);
+
+  if (matches.length === 0) {
+    return <>{text}</>;
+  }
+
+  const nodes: React.ReactNode[] = [];
+  let cursor = 0;
+  matches.forEach((m, idx) => {
+    if (m.start > cursor) {
+      nodes.push(text.slice(cursor, m.start));
+    }
+    nodes.push(
+      <a
+        key={`port-link-${idx}-${m.start}`}
+        href={m.replacement}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-blue-600 dark:text-blue-400 hover:underline break-all"
+      >
+        {m.replacement}
+      </a>
+    );
+    cursor = m.end;
+  });
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+  return <>{nodes}</>;
 };
 
 export const ToolUseRenderer = ({ content, input, output, messageId, onInterrupt }: ToolUseRendererProps) => {
@@ -77,7 +116,9 @@ export const ToolUseRenderer = ({ content, input, output, messageId, onInterrupt
           {output && (
             <div className="p-2 bg-gray-100 dark:bg-gray-800 rounded overflow-auto max-h-60">
               <div className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">{t('output')}:</div>
-              <pre className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-all">{output}</pre>
+              <pre className="text-xs text-gray-700 dark:text-gray-300 whitespace-pre-wrap break-all">
+                <LinkifiedText text={output} />
+              </pre>
             </div>
           )}
         </div>

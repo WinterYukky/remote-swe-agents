@@ -11,6 +11,7 @@ import {
   getTodoList,
   getUnreadMap,
   noOpFiltering,
+  readMetadata,
 } from '@remote-swe-agents/agent-core/lib';
 import SessionPageClient from './component/SessionPageClient';
 import { MessageView } from './component/MessageList';
@@ -18,6 +19,7 @@ import { notFound } from 'next/navigation';
 import { RefreshOnFocus } from '@/components/RefreshOnFocus';
 import { extractUserMessage, formatMessage, stripAgentMessagePrefix } from '@/lib/message-formatter';
 import { getSession as getAuthSession } from '@/lib/auth';
+import type { PortMapping } from '@/lib/port-url-transform';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -296,6 +298,18 @@ export default async function SessionPage({ params }: PageProps<'/sessions/[work
     agentIconUrl = `/api/agent-icon?key=${encodeURIComponent(iconKey)}`;
   }
 
+  // Load persisted port mappings (hostname + opened ports) so message
+  // rendering can rewrite localhost:PORT references to clickable public
+  // preview URLs. Only present for EC2-runtime sessions where `openPort`
+  // has been invoked.
+  const rawPortMetadata = (await readMetadata('openedPorts', workerId)) as PortMapping | undefined;
+  const initialPortMapping: PortMapping | null = rawPortMetadata
+    ? {
+        hostname: rawPortMetadata.hostname,
+        openedPorts: Array.isArray(rawPortMetadata.openedPorts) ? rawPortMetadata.openedPorts : [],
+      }
+    : null;
+
   return (
     <>
       <SessionPageClient
@@ -313,6 +327,7 @@ export default async function SessionPage({ params }: PageProps<'/sessions/[work
         unreadMap={unreadMap}
         lastReadAt={lastReadAt}
         parentSessionId={session.parentSessionId}
+        initialPortMapping={initialPortMapping}
       />
       <RefreshOnFocus />
     </>
