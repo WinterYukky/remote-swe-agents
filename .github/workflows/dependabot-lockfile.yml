@@ -26,17 +26,26 @@
 # - npm install uses --ignore-scripts as defense-in-depth to prevent
 #   execution of any lifecycle scripts (e.g. git dependency prepare scripts).
 #
-# CI trigger behavior:
-# - If LOCKFILE_FIX_TOKEN secret is configured (PAT or GitHub App token with
-#   contents:write), the push uses that token and WILL trigger CI workflows.
-# - If the secret is not set, falls back to GITHUB_TOKEN — the lockfile is
-#   still fixed but CI won't re-run automatically (GitHub's recursive workflow
-#   prevention). Maintainers should configure the secret for full functionality.
+# CI trigger behavior (PAT-free design):
+# - All operations use the built-in GITHUB_TOKEN — no PAT or GitHub App
+#   token is required.
+# - After pushing the lockfile fix, this workflow triggers the Build CI via
+#   workflow_dispatch on the PR head branch. Per GitHub's documented exception,
+#   workflow_dispatch events fired by GITHUB_TOKEN DO create new workflow runs
+#   (unlike push/pull_request events which are suppressed to prevent recursion).
+# - The dispatched Build workflow (build.yml) uses dorny/paths-filter which
+#   compares the PR branch against the default branch, correctly identifying
+#   all changed paths for conditional job execution.
 #
 # Infinite loop prevention:
 # - The paths filter only matches **/package.json changes.
-# - The commit is pushed by a non-dependabot actor (github-actions[bot] or the
-#   PAT/App identity), so the actor gate (dependabot[bot]) blocks re-trigger.
+# - The lockfile commit is pushed by github-actions[bot] via GITHUB_TOKEN,
+#   so push-triggered workflows are suppressed (GitHub's standard recursion
+#   prevention for GITHUB_TOKEN pushes).
+# - The explicitly dispatched workflow_dispatch targets build.yml (not this
+#   workflow), so no re-trigger of dependabot-lockfile.yml occurs.
+# - The actor gate (dependabot[bot]) would block re-trigger regardless,
+#   since the push actor is github-actions[bot].
 
 name: Dependabot Lockfile Fix
 
@@ -48,6 +57,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: dependabot-lockfile-${{ github.event.pull_request.number }}
@@ -64,7 +74,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-          token: ${{ secrets.LOCKFILE_FIX_TOKEN || github.token }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -97,3 +106,12 @@ jobs:
           git add package-lock.json cdk/package-lock.json
           git commit -m "chore: regenerate lockfiles for workspace consistency"
           git push origin "HEAD:refs/heads/${PR_HEAD_REF}"
+
+      - name: Trigger CI via workflow_dispatch
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/workflows/build.yml/dispatches" \
+            -f "ref=${PR_HEAD_REF}"
