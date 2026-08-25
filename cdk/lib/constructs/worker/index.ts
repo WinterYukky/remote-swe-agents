@@ -23,6 +23,7 @@ export interface WorkerProps {
   vpc: ec2.IVpc;
   storageTable: ITableV2;
   imageBucket: IBucket;
+  previewMicrovmImageArn?: string;
   slackBotTokenParameter?: IStringParameter;
   gitHubApp?: {
     privateKeyParameterName: string;
@@ -104,6 +105,7 @@ export class Worker extends Construct {
     const agentCoreRuntime = new AgentCoreRuntime(this, 'AgentCore', {
       storageTable: props.storageTable,
       imageBucket: props.imageBucket,
+      previewMicrovmImageArn: props.previewMicrovmImageArn,
       bus: bus,
       slackBotTokenParameter: props.slackBotTokenParameter,
       gitHubApp: props.gitHubApp,

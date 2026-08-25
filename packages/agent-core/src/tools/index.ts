@@ -22,6 +22,7 @@ export * from './confirm-complete-session';
 export * from './list-sessions';
 export * from './reparent-session';
 export * from './export-session-diagnostics';
+export * from './preview';
 
 import { ciTool } from './ci';
 import { commandExecutionTool } from './command-execution';
@@ -46,6 +47,17 @@ import { confirmCompleteSessionTool } from './confirm-complete-session';
 import { listSessionsTool } from './list-sessions';
 import { reparentSessionTool } from './reparent-session';
 import { exportSessionDiagnosticsTool } from './export-session-diagnostics';
+import { openPreviewTool, closePreviewTool, registerPreviewExitHandlers } from './preview';
+
+/**
+ * Preview tools that are only available on AgentCore runtime with
+ * PREVIEW_MICROVM_IMAGE_ARN configured.
+ */
+export const previewTools = process.env.PREVIEW_MICROVM_IMAGE_ARN ? [openPreviewTool, closePreviewTool] : [];
+// Register exit handlers when preview tools are active
+if (previewTools.length > 0) {
+  registerPreviewExitHandlers();
+}
 
 /**
  * Tools that require GitHub configuration.
@@ -104,6 +116,7 @@ export const optionalTools = [
   listSessionsTool,
   reparentSessionTool,
   exportSessionDiagnosticsTool,
+  ...previewTools,
 ];
 
 /**

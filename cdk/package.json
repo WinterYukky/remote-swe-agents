@@ -26,11 +26,12 @@
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.983.0",
+    "@aws-sdk/client-secrets-manager": "^3.1102.0",
     "@cdklabs/deploy-time-build": "^0.0.6",
-    "aws-cdk-lib": "^2.187.0",
+    "aws-cdk-lib": "^2.263.0",
     "cdk-image-pipeline": "^0.5.107",
     "cdk-nag": "^2.35.33",
-    "constructs": "^10.0.0",
+    "constructs": "^10.8.1",
     "tsx": "^4.22.4",
     "yaml": "^2.7.1"
   }

@@ -52,6 +52,7 @@ export interface WebappProps {
 
 export class Webapp extends Construct {
   public readonly baseUrl: string;
+  public readonly handler: DockerImageFunction;
 
   constructor(scope: Construct, id: string, props: WebappProps) {
     super(scope, id);
@@ -114,6 +115,8 @@ export class Webapp extends Construct {
       props.vapidKeys.grantRead(handler);
       handler.node.addDependency(props.vapidKeys.customResource);
     }
+
+    this.handler = handler;
 
     handler.addToRolePolicy(
       new PolicyStatement({
