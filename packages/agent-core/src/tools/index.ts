@@ -27,6 +27,7 @@ export * from './reparent-session';
 export * from './search-sessions';
 export * from './export-session-diagnostics';
 export * from './manage-skill';
+export * from './manage-memory';
 
 import { ciTool } from './ci';
 import { commandExecutionTool } from './command-execution';
@@ -55,6 +56,7 @@ import { reparentSessionTool } from './reparent-session';
 import { searchSessionsTool } from './search-sessions';
 import { exportSessionDiagnosticsTool } from './export-session-diagnostics';
 import { listSkillsTool, getSkillTool, createSkillTool, updateSkillTool, deleteSkillTool } from './manage-skill';
+import { listLessonsTool, getLessonTool, createLessonTool, updateLessonTool, deleteLessonTool } from './manage-memory';
 
 /**
  * Tools that require GitHub configuration.
@@ -121,6 +123,11 @@ export const optionalTools = [
   createSkillTool,
   updateSkillTool,
   deleteSkillTool,
+  listLessonsTool,
+  getLessonTool,
+  createLessonTool,
+  updateLessonTool,
+  deleteLessonTool,
 ];
 
 /**
