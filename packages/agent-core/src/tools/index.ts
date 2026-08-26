@@ -9,9 +9,12 @@ export * from './manage-agent';
 export * from './repo';
 export * from './report-progress';
 export * from './send-file';
+export * from './send-file-to-agent';
 export * from './send-to-agent';
 export * from './acknowledge-agent';
 export * from './confirm-send-to-user';
+export * from './confirm-send-file-to-user';
+export * from './child-guard';
 export * from './think';
 export * from './wait-for';
 export * from './read-image';
@@ -21,6 +24,7 @@ export * from './complete-session';
 export * from './confirm-complete-session';
 export * from './list-sessions';
 export * from './reparent-session';
+export * from './search-sessions';
 export * from './export-session-diagnostics';
 export * from './manage-skill';
 
@@ -35,9 +39,11 @@ import { listAgentsTool, getAgentTool, createAgentTool, updateAgentTool, deleteA
 import { cloneRepositoryTool } from './repo';
 import { reportProgressTool } from './report-progress';
 import { sendFileTool } from './send-file';
+import { sendFileToAgentTool } from './send-file-to-agent';
 import { sendToAgentTool } from './send-to-agent';
 import { acknowledgeAgentTool } from './acknowledge-agent';
 import { confirmSendToUserTool } from './confirm-send-to-user';
+import { confirmSendFileToUserTool } from './confirm-send-file-to-user';
 import { readImageTool } from './read-image';
 import { todoInitTool, todoUpdateTool } from './todo';
 import { updateSessionTitleTool } from './session-title';
@@ -46,6 +52,7 @@ import { completeSessionTool } from './complete-session';
 import { confirmCompleteSessionTool } from './confirm-complete-session';
 import { listSessionsTool } from './list-sessions';
 import { reparentSessionTool } from './reparent-session';
+import { searchSessionsTool } from './search-sessions';
 import { exportSessionDiagnosticsTool } from './export-session-diagnostics';
 import { listSkillsTool, getSkillTool, createSkillTool, updateSkillTool, deleteSkillTool } from './manage-skill';
 
@@ -73,6 +80,7 @@ export const requiredTools = [
   sendFileTool,
   updateSessionTitleTool,
   confirmSendToUserTool,
+  confirmSendFileToUserTool,
   confirmCompleteSessionTool,
 ];
 
@@ -93,6 +101,7 @@ export const optionalTools = [
   readImageTool,
   createNewSessionTool,
   sendToAgentTool,
+  sendFileToAgentTool,
   acknowledgeAgentTool,
   listAgentsTool,
   getAgentTool,
@@ -105,6 +114,7 @@ export const optionalTools = [
   completeSessionTool,
   listSessionsTool,
   reparentSessionTool,
+  searchSessionsTool,
   exportSessionDiagnosticsTool,
   listSkillsTool,
   getSkillTool,
