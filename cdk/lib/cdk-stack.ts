@@ -16,6 +16,7 @@ import { AsyncJob } from './constructs/async-job';
 import { Webapp } from './constructs/webapp';
 import { IRepository } from 'aws-cdk-lib/aws-ecr';
 import { VapidKeys } from './constructs/vapid-keys';
+import { UserParamsCleaner } from './constructs/user-params-cleaner';
 
 export interface MainStackProps extends cdk.StackProps {
   readonly signPayloadHandler: EdgeFunction;
@@ -134,6 +135,12 @@ export class MainStack extends cdk.Stack {
     });
 
     const vapidKeys = new VapidKeys(this, 'VapidKeys');
+
+    // Sweep runtime-created per-user SSM parameters (e.g. Kiro API keys) on
+    // stack deletion. They are created by the webapp via `ssm:PutParameter`,
+    // outside of CloudFormation's lifecycle, so they would otherwise leak
+    // after `cdk destroy`.
+    new UserParamsCleaner(this, 'UserParamsCleaner');
 
     const kiroApiKeyParameter = props.kiroApiKeyParameterName
       ? StringParameter.fromStringParameterAttributes(this, 'KiroApiKey', {
