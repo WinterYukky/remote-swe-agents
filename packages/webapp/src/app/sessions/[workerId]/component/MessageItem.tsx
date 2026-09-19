@@ -31,6 +31,8 @@ type MessageItemProps = {
   message: MessageView;
   showTimestamp: boolean;
   agentName?: string;
+  /** The session id (workerId) of the currently open chat session */
+  currentSessionId?: string;
   onRewind?: (messageSK: string) => void;
   isRewindDisabled?: boolean;
 };
@@ -39,6 +41,7 @@ export const MessageItem = React.memo(function MessageItem({
   message,
   showTimestamp,
   agentName,
+  currentSessionId,
   onRewind,
   isRewindDisabled,
 }: MessageItemProps) {
@@ -83,21 +86,17 @@ export const MessageItem = React.memo(function MessageItem({
       </div>
       <div className="flex-1 min-w-0">
         {message.type === 'toolUse' ? (
-          <>
-            <ToolUseRenderer
-              content={message.content}
-              input={message.detail}
-              output={message.output}
-              messageId={message.id}
-            />
-            {message.imageKeys && message.imageKeys.length > 0 && (
-              <ImageViewer imageKeys={message.imageKeys} localImageUrls={message.localImageUrls} />
-            )}
-          </>
+          <ToolUseRenderer
+            content={message.content}
+            input={message.detail}
+            output={message.output}
+            messageId={message.id}
+            imageKeys={message.imageKeys}
+          />
         ) : message.type === 'eventTrigger' ? (
           <EventTriggerRenderer name={message.detail} content={message.content} />
         ) : message.type === 'agentMessage' ? (
-          <AgentMessageRenderer message={message} agentName={agentName} />
+          <AgentMessageRenderer message={message} agentName={agentName} currentSessionId={currentSessionId} />
         ) : message.pending ? (
           <div className="pb-2 break-all">
             <span className="text-sm animate-shimmer-text bg-clip-text text-transparent bg-[length:200%_auto] whitespace-pre-wrap">

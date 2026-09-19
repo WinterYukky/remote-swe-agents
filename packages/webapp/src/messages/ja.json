@@ -174,7 +174,14 @@
     "agentErrorStopped": "エラーによりエージェントが停止しました: {errorType}",
     "batchDeleteAccepted": "{count, plural, other {#件のセッション}}をバックグラウンドで削除中...",
     "batchDeleteItemError": "一部のセッションの削除に失敗しました。選択中の残りを再試行してください。",
-    "filterByTitle": "タイトルで絞り込み..."
+    "filterByTitle": "タイトルで絞り込み...",
+    "activityChatsFull": "エージェント会話 {count} 件",
+    "activityChatsWord": "会話",
+    "activityEventsFull": "イベント {count} 件",
+    "activityEventsWord": "イベント",
+    "activityRunningLabel": "{tool} 実行中",
+    "activityToolsFull": "ツール {count} 件",
+    "activityToolsWord": "ツール"
   },
   "home": {
     "title": "Remote SWE Agents へようこそ",

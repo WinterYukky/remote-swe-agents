@@ -174,7 +174,14 @@
     "agentErrorStopped": "Agent stopped due to an error: {errorType}",
     "batchDeleteAccepted": "Deleting {count, plural, one {# session} other {# sessions}} in the background...",
     "batchDeleteItemError": "Failed to delete some sessions. Retry the remaining selections.",
-    "filterByTitle": "Filter by title..."
+    "filterByTitle": "Filter by title...",
+    "activityChatsFull": "{count} agent messages",
+    "activityChatsWord": "chats",
+    "activityEventsFull": "{count} events",
+    "activityEventsWord": "events",
+    "activityRunningLabel": "running {tool}",
+    "activityToolsFull": "{count} tools",
+    "activityToolsWord": "tools"
   },
   "home": {
     "title": "Welcome to Remote SWE Agents",

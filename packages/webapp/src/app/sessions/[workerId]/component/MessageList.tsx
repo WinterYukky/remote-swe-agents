@@ -6,6 +6,11 @@ import { useTranslations } from 'next-intl';
 import { useEffect, useRef } from 'react';
 import { useScrollPosition } from '@/hooks/use-scroll-position';
 import { MessageGroupComponent } from './MessageGroup';
+import { groupMessages, getMessageSenderKey } from './message-clustering';
+import { AgentIconProvider } from './agent-icon-context';
+
+// Re-exported for back-compat: existing tests import it from this module.
+export { getMessageSenderKey };
 import { ModelType } from '@remote-swe-agents/agent-core/schema';
 
 export type MessageView = {
@@ -14,6 +19,20 @@ export type MessageView = {
   content: string;
   detail?: string;
   output?: string; // Added for toolResult output JSON
+  /**
+   * ACP tool_use id of the tool call this bubble represents. Stamped on
+   * every `toolUse` bubble so the live `toolResult` reducer can attach the
+   * result to the exact bubble by id instead of by fragile array position.
+   */
+  toolUseId?: string;
+  /**
+   * All ACP tool_use ids of the tool calls this bubble represents. The
+   * server-side history builder collapses a parallel tool batch (several
+   * tool calls in one assistant message) into a single cluster bubble, so it
+   * carries every id here; the live `toolResult` reducer attaches a result
+   * when the event id matches `toolUseId` OR any entry of `toolUseIds`.
+   */
+  toolUseIds?: string[];
   timestamp: Date;
   type: 'message' | 'toolResult' | 'toolUse' | 'eventTrigger' | 'agentMessage';
   imageKeys?: string[];
@@ -70,32 +89,15 @@ export type MessageView = {
   clientId?: string;
 };
 
-/**
- * Derive a stable key that identifies the *sender* of a message for the
- * purpose of grouping consecutive bubbles in `MessageList`. Two messages with
- * the same key are considered to come from the same source and may share a
- * group; different keys force a new group.
- *
- * Rules:
- *   - assistant / tool / event messages collapse onto a single 'assistant'
- *     bucket per `agentName`; the existing role+agentName check covers this.
- *   - user messages are keyed by `userSenderType + userSenderUserId`. If the
- *     stable id is missing we fall back to the displayName so legacy items
- *     (without sender metadata) still group sensibly. Falling all the way
- *     through yields a single 'user:legacy' bucket which preserves the
- *     pre-feature behaviour.
- */
-export function getMessageSenderKey(message: MessageView): string {
-  if (message.role !== 'user' || message.type !== 'message') {
-    return `${message.role}:${message.agentName ?? ''}`;
-  }
-  const type = message.userSenderType ?? 'unknown';
-  const id = message.userSenderUserId ?? message.userSenderDisplayName ?? 'legacy';
-  return `user:${type}:${id}`;
-}
-
 export type MessageGroup = {
   role: 'user' | 'assistant';
+  /**
+   * 'activity' groups a maximal run of consecutive non-content messages
+   * (tool calls / event triggers / agent-to-agent messages) that renders as
+   * one mixed activity cluster. 'content' is a normal run of assistant-text
+   * or user messages that renders with the usual sender header + bubbles.
+   */
+  kind: 'content' | 'activity';
   messages: MessageView[];
 };
 
@@ -107,6 +109,8 @@ type MessageListProps = {
   agentStatus?: 'pending' | 'working' | 'completed';
   agentIconUrl?: string;
   agentName?: string;
+  /** The session id (workerId) of the currently open chat session */
+  workerId?: string;
   lastReadAt?: number;
   childSessions?: { workerId: string; title?: string }[];
   onRewind?: (messageSK: string) => void;
@@ -118,6 +122,7 @@ export default function MessageList({
   agentStatus,
   agentIconUrl,
   agentName,
+  workerId,
   lastReadAt,
   childSessions,
   onRewind,
@@ -126,46 +131,20 @@ export default function MessageList({
   const { userScrolledUp } = useScrollPosition();
   const [showAll, setShowAll] = useState(false);
 
-  const messageGroups = useMemo(() => {
-    const groups: MessageGroup[] = [];
-    let currentGroup: MessageGroup | null = null;
+  const messageGroups = useMemo(() => groupMessages(messages), [messages]);
 
-    messages.forEach((message) => {
-      // Agent messages always start a new group (each has its own sender context)
-      const isAgentMsg = message.type === 'agentMessage';
-      const prevIsAgentMsg = currentGroup?.messages[0]?.type === 'agentMessage';
-
-      // Start a new group when any of the following changes:
-      //   - role (user/assistant)
-      //   - agentName (assistant identity)
-      //   - sender key for user messages (so Alice → Bob in consecutive
-      //     user messages renders as two separate Alice / Bob groups
-      //     instead of clobbering Bob's bubble with Alice's name).
-      //   - agent message boundary (agent-to-agent messages are never merged)
-      const currentAgentName = currentGroup?.messages[0]?.agentName;
-      const currentSenderKey = currentGroup ? getMessageSenderKey(currentGroup.messages[0]) : undefined;
-      const messageSenderKey = getMessageSenderKey(message);
-      const isSameSource =
-        currentGroup &&
-        currentGroup.role === message.role &&
-        currentAgentName === message.agentName &&
-        currentSenderKey === messageSenderKey &&
-        !isAgentMsg &&
-        !prevIsAgentMsg;
-
-      if (!isSameSource) {
-        currentGroup = {
-          role: message.role,
-          messages: [message],
-        };
-        groups.push(currentGroup);
-      } else {
-        currentGroup!.messages.push(message);
-      }
-    });
-
-    return groups;
-  }, [messages]);
+  // Distinct agent session ids referenced by the message list (both sides of
+  // every agent-to-agent message, plus the current session) — used to batch-
+  // resolve per-agent icons for the avatar chips.
+  const agentSessionIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (workerId) ids.add(workerId);
+    for (const m of messages) {
+      if (m.senderSessionId) ids.add(m.senderSessionId);
+      if (m.targetSessionId) ids.add(m.targetSessionId);
+    }
+    return Array.from(ids);
+  }, [messages, workerId]);
 
   const hiddenCount = showAll ? 0 : Math.max(0, messageGroups.length - INITIAL_VISIBLE_GROUPS);
   const visibleGroups = hiddenCount > 0 ? messageGroups.slice(hiddenCount) : messageGroups;
@@ -306,73 +285,77 @@ export default function MessageList({
   const adjustedNewMessageIndex = newMessageGroupIndex >= 0 ? newMessageGroupIndex - hiddenCount : -1;
 
   return (
-    <div className="flex-1 overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-4 py-2">
-        <div>
-          {/* "Show older messages" button - Twitter-style inline */}
-          {hiddenCount > 0 && (
-            <button onClick={handleShowAll} className="w-full group cursor-pointer">
-              <div className="flex items-center gap-3 py-3 px-4 my-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-750 hover:border-gray-300 dark:hover:border-gray-600 transition-all duration-200 shadow-sm">
-                <div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center flex-shrink-0 group-hover:bg-blue-50 dark:group-hover:bg-blue-900/30 transition-colors">
-                  <ChevronUp className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:text-blue-500 transition-colors" />
-                </div>
-                <span className="text-sm font-medium text-gray-500 dark:text-gray-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                  {t('showOlderMessages', { count: hiddenMessageCount })}
-                </span>
-              </div>
-            </button>
-          )}
-
-          {visibleGroups.map((group, index) => (
-            <div key={`group-${hiddenCount + index}`}>
-              {index === adjustedNewMessageIndex && adjustedNewMessageIndex >= 0 && (
-                <div className="flex items-center gap-3 my-4">
-                  <div className="flex-1 h-px bg-red-400 dark:bg-red-500" />
-                  <span className="text-xs font-semibold text-red-500 dark:text-red-400 whitespace-nowrap">
-                    {t('newMessages')}
+    <AgentIconProvider sessionIds={agentSessionIds}>
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-4xl mx-auto px-4 py-2">
+          <div>
+            {/* "Show older messages" button - Twitter-style inline */}
+            {hiddenCount > 0 && (
+              <button onClick={handleShowAll} className="w-full group cursor-pointer">
+                <div className="flex items-center gap-3 py-3 px-4 my-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-750 hover:border-gray-300 dark:hover:border-gray-600 transition-all duration-200 shadow-sm">
+                  <div className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-700 flex items-center justify-center flex-shrink-0 group-hover:bg-blue-50 dark:group-hover:bg-blue-900/30 transition-colors">
+                    <ChevronUp className="w-4 h-4 text-gray-400 dark:text-gray-500 group-hover:text-blue-500 transition-colors" />
+                  </div>
+                  <span className="text-sm font-medium text-gray-500 dark:text-gray-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                    {t('showOlderMessages', { count: hiddenMessageCount })}
                   </span>
-                  <div className="flex-1 h-px bg-red-400 dark:bg-red-500" />
                 </div>
-              )}
-              <MessageGroupComponent
-                group={group}
-                agentIconUrl={agentIconUrl}
-                agentName={agentName}
-                onRewind={onRewind}
-                isRewindDisabled={agentStatus === 'working'}
-              />
-            </div>
-          ))}
-        </div>
-      </div>
+              </button>
+            )}
 
-      {/* Typing indicator - shown near the input area like Slack's "is typing..." */}
-      {showLoadingIndicator && (
-        <div className="sticky bottom-0 bg-gray-50 dark:bg-gray-900">
-          <div className="max-w-4xl mx-auto px-4 py-1.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div
-                  className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden"
-                  style={{ backgroundColor: agentIconUrl ? 'transparent' : '#3B82F6' }}
-                >
-                  {agentIconUrl ? (
-                    /* eslint-disable-next-line @next/next/no-img-element */
-                    <img src={agentIconUrl} alt="" className="w-5 h-5 rounded-full object-cover" />
-                  ) : (
-                    <Bot className="w-3 h-3 text-white" />
-                  )}
+            {visibleGroups.map((group, index) => (
+              <div key={`group-${hiddenCount + index}`}>
+                {index === adjustedNewMessageIndex && adjustedNewMessageIndex >= 0 && (
+                  <div className="flex items-center gap-3 my-4">
+                    <div className="flex-1 h-px bg-red-400 dark:bg-red-500" />
+                    <span className="text-xs font-semibold text-red-500 dark:text-red-400 whitespace-nowrap">
+                      {t('newMessages')}
+                    </span>
+                    <div className="flex-1 h-px bg-red-400 dark:bg-red-500" />
+                  </div>
+                )}
+                <MessageGroupComponent
+                  group={group}
+                  agentIconUrl={agentIconUrl}
+                  agentName={agentName}
+                  currentSessionId={workerId}
+                  onRewind={onRewind}
+                  isRewindDisabled={agentStatus === 'working'}
+                  isLastGroup={index === visibleGroups.length - 1}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Typing indicator - shown near the input area like Slack's "is typing..." */}
+        {showLoadingIndicator && (
+          <div className="sticky bottom-0 bg-gray-50 dark:bg-gray-900">
+            <div className="max-w-4xl mx-auto px-4 py-1.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div
+                    className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 overflow-hidden"
+                    style={{ backgroundColor: agentIconUrl ? 'transparent' : '#3B82F6' }}
+                  >
+                    {agentIconUrl ? (
+                      /* eslint-disable-next-line @next/next/no-img-element */
+                      <img src={agentIconUrl} alt="" className="w-5 h-5 rounded-full object-cover" />
+                    ) : (
+                      <Bot className="w-3 h-3 text-white" />
+                    )}
+                  </div>
+                  <span className="text-sm animate-shimmer-text bg-clip-text text-transparent bg-[length:200%_auto]">
+                    {instanceStatus === 'starting'
+                      ? t('agentStartingMessage')
+                      : t('aiAgentResponding', { agentName: agentName || 'Assistant' })}
+                  </span>
                 </div>
-                <span className="text-sm animate-shimmer-text bg-clip-text text-transparent bg-[length:200%_auto]">
-                  {instanceStatus === 'starting'
-                    ? t('agentStartingMessage')
-                    : t('aiAgentResponding', { agentName: agentName || 'Assistant' })}
-                </span>
               </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </AgentIconProvider>
   );
 }

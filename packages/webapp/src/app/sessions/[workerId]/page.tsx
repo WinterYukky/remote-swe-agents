@@ -22,6 +22,12 @@ import {
 import { toolNameInSet } from '@remote-swe-agents/agent-core/tool-name-utils';
 import SessionPageClient from './component/SessionPageClient';
 import { MessageView } from './component/MessageList';
+import { stripInternalPromptText } from './component/strip-internal-prompt-text';
+import {
+  buildToolUseHistoryBubble,
+  formatToolResultEntry,
+  TOOL_RESULT_OUTPUT_SEPARATOR,
+} from './component/build-tool-use-history-bubble';
 import { notFound } from 'next/navigation';
 import { RefreshOnFocus } from '@/components/RefreshOnFocus';
 import { extractUserMessage, formatMessage, stripAgentMessagePrefix, stripSenderPrefix } from '@/lib/message-formatter';
@@ -193,24 +199,23 @@ export default async function SessionPage({ params }: { params: Promise<{ worker
           .filter((c) => c.toolUse != undefined)
           .filter((c) => !isHiddenTool(c.toolUse.name));
 
-        if (tools.length > 0) {
-          const content = tools.map((block) => block.toolUse.name).join(' + ');
-          const detail = tools
-            .map(
-              (block) =>
-                `${block.toolUse.name} (${block.toolUse.toolUseId})\n${JSON.stringify(block.toolUse.input, undefined, 2)}`
-            )
-            .join('\n\n');
-
-          messages.push({
-            id: `${item.SK}-${i}`,
-            role: 'assistant',
-            content,
-            detail,
-            timestamp: new Date(parseInt(item.SK)),
-            type: 'toolUse',
-            thinkingBudget: item.thinkingBudget,
-          });
+        // Build the cluster bubble via the shared pure builder so it is
+        // stamped with every tool call's `toolUseId` (`toolUseIds`). The live
+        // `toolResult` reducer matches by id, so an un-stamped history bubble
+        // left a parallel batch stuck on "Executing..." after `router.refresh`
+        // (live/refresh mismatch follow-up).
+        const toolUseBubble = buildToolUseHistoryBubble({
+          tools: tools.map((block) => ({
+            name: block.toolUse.name,
+            toolUseId: block.toolUse.toolUseId,
+            input: block.toolUse.input,
+          })),
+          sk: item.SK,
+          index: i,
+          thinkingBudget: item.thinkingBudget,
+        });
+        if (toolUseBubble) {
+          messages.push(toolUseBubble);
         }
         break;
       }
@@ -223,14 +228,20 @@ export default async function SessionPage({ params }: { params: Promise<{ worker
 
         if (results.length > 0) {
           const detail = results
-            .map(
-              (block) =>
-                `${block.toolResult.toolUseId}\n${(block.toolResult.content ?? [])
-                  .filter((b) => b.text)
-                  .map((b) => b.text)
-                  .join('\n')}`
+            .map((block) =>
+              formatToolResultEntry(
+                String(block.toolResult.toolUseId),
+                // Strip internal, model-facing prompt text at display time so a
+                // reload renders identically to the live view.
+                stripInternalPromptText(
+                  (block.toolResult.content ?? [])
+                    .filter((b) => b.text)
+                    .map((b) => b.text)
+                    .join('\n')
+                )
+              )
             )
-            .join('\n\n');
+            .join(TOOL_RESULT_OUTPUT_SEPARATOR);
           toolUse.output = detail;
 
           const toolResultImageKeys = results

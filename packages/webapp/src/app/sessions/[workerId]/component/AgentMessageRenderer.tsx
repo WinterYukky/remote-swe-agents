@@ -1,48 +1,67 @@
 import React, { useState } from 'react';
-import { ArrowRight, ArrowLeft, ChevronRight, ChevronDown, Bot } from 'lucide-react';
+import { ArrowRight, ArrowLeft, ChevronRight, ChevronDown } from 'lucide-react';
 import { MessageView } from './MessageList';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { AgentAvatar } from './agent-avatar';
+import { useAgentIconUrl } from './agent-icon-context';
 
 type AgentMessageRendererProps = {
   message: MessageView;
   /** The agent name of the currently open chat session */
   agentName?: string;
+  /** The session id (workerId) of the currently open chat session */
+  currentSessionId?: string;
 };
 
 /**
  * Renders an agent-to-agent message with compact communication log style.
  *
- * Arrow direction indicates send/receive relative to the current session's agent:
- * - Current agent is target (receiving): CurrentAgent ← SenderAgent
- * - Current agent is sender (sending): CurrentAgent → TargetAgent
- * - Neither matches (e.g. parent watching): SenderAgent → TargetAgent
+ * A conversation always has two sides, so both the sender and the target are
+ * shown as avatars (single-source identity colors via `AgentAvatar`), with an
+ * arrow between them.
+ *
+ * Arrow direction indicates send/receive relative to the current session's
+ * agent, decided by SESSION ID (not display name, which can collide across
+ * agents):
+ * - Current agent is the target (receiving): Sender → CurrentAgent, arrow ←
+ * - Current agent is the sender (sending):   CurrentAgent → Target, arrow →
+ * - Neither side is the current agent (e.g. a parent observing two other
+ *   agents): Sender → Target, arrow →
+ * When session ids are missing (legacy data) we fall back to name matching.
  */
-export const AgentMessageRenderer = ({ message, agentName }: AgentMessageRendererProps) => {
+export const AgentMessageRenderer = ({ message, agentName, currentSessionId }: AgentMessageRendererProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const isAck = message.isAcknowledge;
 
-  const isCurrentTarget = agentName && message.targetAgentName === agentName;
-  const isCurrentSender = agentName && message.senderAgentName === agentName;
+  const senderName = message.senderAgentName || 'Agent';
+  const targetName = message.targetAgentName;
 
-  let leftName: string;
-  let rightName: string | undefined;
-  let arrowDirection: '←' | '→';
+  // Identify the current session PER SIDE: when that side carries a session
+  // id, match on it (collision-free); only when the side's session id is
+  // absent (legacy data) fall back to display-name matching. Keying on
+  // `currentSessionId` presence instead would make the name fallback
+  // unreachable, since currentSessionId is essentially always provided.
+  const isCurrentSender = message.senderSessionId
+    ? message.senderSessionId === currentSessionId
+    : !!agentName && message.senderAgentName === agentName;
+  const isCurrentTarget = message.targetSessionId
+    ? message.targetSessionId === currentSessionId
+    : !!agentName && message.targetAgentName === agentName;
 
-  if (isCurrentTarget) {
-    leftName = agentName;
-    rightName = message.senderAgentName || 'Agent';
-    arrowDirection = '←';
-  } else if (isCurrentSender) {
-    leftName = agentName;
-    rightName = message.targetAgentName || 'Agent';
-    arrowDirection = '→';
-  } else {
-    leftName = message.senderAgentName || 'Agent';
-    rightName = message.targetAgentName;
-    arrowDirection = '→';
-  }
+  // Always present the conversation as from → to. When the current session is
+  // the receiver we render the arrow reversed (←) so the current agent reads
+  // on the right, matching the previous receive semantics.
+  const receiving = isCurrentTarget && !isCurrentSender;
 
-  const ArrowIcon = arrowDirection === '←' ? ArrowLeft : ArrowRight;
+  const fromSession = receiving ? message.targetSessionId : message.senderSessionId;
+  const fromName = receiving ? targetName || agentName : senderName;
+  const toSession = receiving ? message.senderSessionId : message.targetSessionId;
+  const toName = receiving ? senderName : targetName;
+
+  const ArrowIcon = receiving ? ArrowLeft : ArrowRight;
+
+  const fromIcon = useAgentIconUrl(fromSession);
+  const toIcon = useAgentIconUrl(toSession);
 
   return (
     <div className="rounded-md min-w-0 w-full overflow-hidden">
@@ -66,12 +85,13 @@ export const AgentMessageRenderer = ({ message, agentName }: AgentMessageRendere
           }}
           className="flex-1 flex items-center text-left text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 cursor-pointer min-w-0 gap-2"
         >
-          <Bot className="w-4 h-4 flex-shrink-0 text-blue-500" />
-          <span className="font-medium text-sm truncate">{leftName}</span>
-          {rightName ? (
+          <AgentAvatar sessionId={fromSession} name={fromName} iconUrl={fromIcon} sizeClassName="w-5 h-5" />
+          <span className="font-medium text-sm truncate">{fromName || 'Agent'}</span>
+          {toName || toSession ? (
             <>
               <ArrowIcon className="w-3.5 h-3.5 flex-shrink-0" />
-              <span className="font-medium text-sm truncate">{rightName}</span>
+              <AgentAvatar sessionId={toSession} name={toName} iconUrl={toIcon} sizeClassName="w-5 h-5" />
+              <span className="font-medium text-sm truncate">{toName || 'Agent'}</span>
               {isAck && <span className="text-xs text-green-600 dark:text-green-400 flex-shrink-0">(ack)</span>}
             </>
           ) : (

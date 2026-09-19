@@ -37,7 +37,6 @@ import {
   ModelType,
 } from '@remote-swe-agents/agent-core/schema';
 import type { SessionListItem } from '@/lib/session-list';
-import { parseAttachmentSentinel } from '@remote-swe-agents/agent-core/attachments';
 import { useTranslations } from 'next-intl';
 import TodoList from './TodoList';
 import { getUnifiedStatus } from '@/utils/session-status';
@@ -46,6 +45,8 @@ import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { formatMessage } from '@/lib/message-formatter';
 import { mergeDuplicateUserRebroadcast } from './dedup';
+import { applyToolResult, SEND_FILE_TOOLS } from './apply-tool-result';
+import { reconcileServerMessages } from './reconcile-server-messages';
 import HandoverModal from './HandoverModal';
 import SessionSidebar from './SessionSidebar';
 import SessionContentSearch from './SessionContentSearch';
@@ -79,7 +80,6 @@ const SEND_MSG_TOOLS = new Set([
   'Send Message To User',
   'Send_Message_To_User',
 ]);
-const SEND_FILE_TOOLS = new Set(['send_file_to_user', 'sendFileToUser', 'Send File To User']);
 const TODO_TOOLS = new Set(['todo_init', 'todo_update', 'todoInit', 'todoUpdate', 'Todo Init', 'Todo Update']);
 
 interface SessionPageClientProps {
@@ -228,9 +228,18 @@ function SessionPageClientInner({
   const [todoList, setTodoList] = useState<TodoListType | null>(initialTodoList);
   const [sessionTitle, setSessionTitle] = useState(initialTitle ?? '');
 
-  // Update state when props change (e.g., on refresh)
+  // Update state when props change (e.g., on refresh). Reconcile rather than
+  // blindly overwrite: a `router.refresh()` can land BEFORE a just-emitted
+  // `toolResult` is persisted to DynamoDB (common for a parallel tool batch,
+  // whose two results arrive almost simultaneously), so the server history
+  // would otherwise clobber the live-applied output and leave one tool stuck
+  // on "Executing..." until a full reload. `reconcileServerMessages` keeps the
+  // server history authoritative for structure while carrying forward a live
+  // `toolResult` output the server has not caught up on yet (see
+  // reconcile-server-messages.ts). Functional updater so we read the freshest
+  // on-screen bubbles.
   useEffect(() => {
-    setMessages(initialMessages);
+    setMessages((prev) => reconcileServerMessages(initialMessages, prev));
   }, [initialMessages]);
 
   // Mirror `messages` into a ref so the debounced consistency re-check
@@ -566,48 +575,12 @@ function SessionPageClientInner({
               setSessionTitle(event.newTitle);
               break;
             case 'toolResult':
-              setMessages((prev) => {
-                // Immutable update: mutating the existing bubble in place and
-                // returning the same array reference makes React bail out of
-                // re-rendering (the previously-shipped bug where tool output
-                // never appeared until a full refresh). Copy the target bubble
-                // into a new array instead.
-                let next = prev;
-                const toolUseIdx = prev.findLastIndex((msg) => msg.type == 'toolUse');
-                if (toolUseIdx >= 0 && prev[toolUseIdx].output == undefined) {
-                  next = [...prev];
-                  next[toolUseIdx] = { ...next[toolUseIdx], output: event.output };
-                }
-                if (event.imageKeys && event.imageKeys.length > 0 && toolUseIdx >= 0) {
-                  const existing = new Set(next[toolUseIdx].imageKeys ?? []);
-                  const deduped = event.imageKeys.filter((k: string) => !existing.has(k));
-                  if (deduped.length > 0) {
-                    if (next === prev) next = [...prev];
-                    next[toolUseIdx] = {
-                      ...next[toolUseIdx],
-                      imageKeys: [...(next[toolUseIdx].imageKeys ?? []), ...deduped],
-                    };
-                  }
-                }
-                // For `sendFileToUser`, the backend embeds the uploaded S3 key
-                // in the tool output as a sentinel. Find the placeholder bubble
-                // we pushed on the matching `toolUse` event and attach the
-                // image/file keys now that we know them.
-                if (toolNameInSet(event.toolName, SEND_FILE_TOOLS)) {
-                  const sentinel = parseAttachmentSentinel(event.output);
-                  if (sentinel) {
-                    const bubbleId = `sendFileToUser-${event.toolUseId}`;
-                    const idx = next.findIndex((m) => m.id === bubbleId);
-                    if (idx >= 0) {
-                      if (next === prev) next = [...prev];
-                      next[idx] = sentinel.isImage
-                        ? { ...next[idx], imageKeys: [sentinel.key] }
-                        : { ...next[idx], fileKeys: [sentinel.key] };
-                    }
-                  }
-                }
-                return next;
-              });
+              // Attach the result to its toolUse bubble STRICTLY by toolUseId
+              // (see apply-tool-result.ts). The prior positional match
+              // (findLastIndex last un-filled toolUse) let a silent tool's
+              // toolResult land on an unrelated bubble, leaving e.g.
+              // createNewSession stuck on "Executing..." in the live view.
+              setMessages((prev) => applyToolResult(prev, event));
 
               // Check if the tool was todoInit or todoUpdate and refetch the todo list
               if (toolNameInSet(event.toolName, TODO_TOOLS)) {
@@ -707,6 +680,7 @@ function SessionPageClientInner({
                     detail: `${event.toolName}\n${JSON.stringify(JSON.parse(event.input), undefined, 2)}`,
                     timestamp: event.messageSK ? new Date(parseInt(event.messageSK)) : new Date(event.timestamp),
                     type: 'toolUse',
+                    toolUseId: event.toolUseId,
                     thinkingBudget: event.thinkingBudget,
                   },
                 ]);
@@ -1094,6 +1068,7 @@ function SessionPageClientInner({
             agentStatus={agentStatus}
             agentIconUrl={agentIconUrl}
             agentName={agentName}
+            workerId={workerId}
             lastReadAt={lastReadAt}
             onRewind={handleRewind}
           />

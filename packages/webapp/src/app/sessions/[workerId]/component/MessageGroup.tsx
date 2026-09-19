@@ -5,6 +5,8 @@ import { useTranslations } from 'next-intl';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { MessageView, MessageGroup } from './MessageList';
 import { MessageItem } from './MessageItem';
+import { ActivityCluster } from './ActivityCluster';
+import { shouldClusterActivity } from './message-clustering';
 import LocalDateTime from '@/components/LocalDateTime';
 
 type MessageGroupProps = {
@@ -13,6 +15,10 @@ type MessageGroupProps = {
   agentName?: string;
   onRewind?: (messageSK: string) => void;
   isRewindDisabled?: boolean;
+  /** The session id (workerId) of the currently open chat session */
+  currentSessionId?: string;
+  /** True for the most recent visible group (its clusters default to open). */
+  isLastGroup?: boolean;
 };
 
 export const MessageGroupComponent = React.memo(function MessageGroupComponent({
@@ -21,13 +27,15 @@ export const MessageGroupComponent = React.memo(function MessageGroupComponent({
   agentName,
   onRewind,
   isRewindDisabled,
+  currentSessionId,
+  isLastGroup = false,
 }: MessageGroupProps) {
   const t = useTranslations('sessions');
   const firstMessage = group.messages[0];
   const firstMessageDate = new Date(firstMessage.timestamp);
   const isChildSessionMessage = !!firstMessage.agentName;
   const childSessionId = firstMessage.childSessionId;
-  const isAgentMessage = firstMessage.type === 'agentMessage';
+  const isActivityGroup = group.kind === 'activity';
 
   const isSameTime = (timestamp1: Date, timestamp2: Date): boolean => {
     return timestamp1.getHours() === timestamp2.getHours() && timestamp1.getMinutes() === timestamp2.getMinutes();
@@ -76,15 +84,64 @@ export const MessageGroupComponent = React.memo(function MessageGroupComponent({
     );
   };
 
-  // For agent messages, use a more compact style (both parent and child views)
-  const containerClass = isAgentMessage
+  // Activity groups (tool/event/agent runs) use a compact style; content
+  // groups keep the normal spacing and optional child-session indent.
+  const containerClass = isActivityGroup
     ? 'mb-2'
     : `mb-3 ${isChildSessionMessage ? 'ml-4 border-l-2 border-blue-200 dark:border-blue-800 pl-3' : ''}`;
 
+  // Prefer the per-submission clientId as the reconciliation key for user
+  // message bubbles: the optimistic bubble's `id` changes from `pending-*`
+  // to the confirmed DynamoDB SK in onConfirm, and keying by `id` would
+  // remount the subtree (re-running ImageViewer's pre-signed URL fetch and
+  // blob seeding for nothing). The clientId is unique per submission and
+  // stable across that transition. Bubbles without a clientId (history
+  // reads, Slack/API senders, assistant messages) keep the id key.
+  const renderItem = (message: MessageView, index: number, siblings: MessageView[]) => {
+    const showTimestamp =
+      index !== 0 && !isSameTime(new Date(message.timestamp), new Date(siblings[index - 1].timestamp));
+    return (
+      <MessageItem
+        key={message.clientId ?? message.id}
+        message={message}
+        showTimestamp={showTimestamp}
+        agentName={agentName}
+        currentSessionId={currentSessionId}
+        onRewind={onRewind}
+        isRewindDisabled={isRewindDisabled}
+      />
+    );
+  };
+
+  const renderBody = () => {
+    // An 'activity' group is a maximal run of consecutive tool calls / event
+    // triggers / agent-to-agent messages. >= 2 renders as one mixed,
+    // collapsible activity cluster with a per-kind breakdown header; a lone
+    // activity message renders bare via the normal per-message renderer.
+    if (isActivityGroup) {
+      if (shouldClusterActivity(group)) {
+        return (
+          <ActivityCluster
+            messages={group.messages}
+            agentName={agentName}
+            currentSessionId={currentSessionId}
+            onRewind={onRewind}
+            isRewindDisabled={isRewindDisabled}
+            defaultExpanded={isLastGroup}
+          />
+        );
+      }
+      return group.messages.map((m, i) => renderItem(m, i, group.messages));
+    }
+
+    // Content group: assistant-text / user messages render as plain bubbles.
+    return group.messages.map((m, i) => renderItem(m, i, group.messages));
+  };
+
   return (
     <div className={containerClass}>
-      {/* Hide the full header for agent messages (the renderer handles display) */}
-      {!isAgentMessage && (
+      {/* Hide the full header for activity groups (the cluster renders its own separator header) */}
+      {!isActivityGroup && (
         <div className="flex items-center gap-3 mb-2">
           <div className="flex-shrink-0">{getIcon()}</div>
           <div className="font-semibold text-gray-900 dark:text-white flex items-center gap-2">
@@ -123,32 +180,7 @@ export const MessageGroupComponent = React.memo(function MessageGroupComponent({
         </div>
       )}
 
-      <div className="space-y-1">
-        {group.messages.map((message, index) => {
-          const showTimestamp =
-            index !== 0 && !isSameTime(new Date(message.timestamp), new Date(group.messages[index - 1].timestamp));
-
-          return (
-            <MessageItem
-              // Prefer the per-submission clientId as the reconciliation key
-              // for user message bubbles: the optimistic bubble's `id`
-              // changes from `pending-*` to the confirmed DynamoDB SK in
-              // onConfirm, and keying by `id` would remount the subtree
-              // (re-running ImageViewer's pre-signed URL fetch and blob
-              // seeding for nothing). The clientId is unique per submission
-              // and stable across that transition. Bubbles without a
-              // clientId (history reads, Slack/API senders, assistant
-              // messages) keep the id key — their ids never mutate in place.
-              key={message.clientId ?? message.id}
-              message={message}
-              showTimestamp={showTimestamp}
-              agentName={agentName}
-              onRewind={onRewind}
-              isRewindDisabled={isRewindDisabled}
-            />
-          );
-        })}
-      </div>
+      <div className="space-y-1">{renderBody()}</div>
     </div>
   );
 });
