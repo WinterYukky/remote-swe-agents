@@ -16,8 +16,8 @@ export type RuntimeType = z.infer<typeof runtimeTypeSchema>;
 export const defaultAgentConfig: { runtimeType: RuntimeType; defaultModel: ModelType; bedrockDefaultModel: ModelType } =
   {
     runtimeType: 'agent-core',
-    defaultModel: 'sonnet4.6',
-    bedrockDefaultModel: 'sonnet4.6',
+    defaultModel: 'sonnet5',
+    bedrockDefaultModel: 'sonnet5',
   };
 
 export const customAgentSchema = z.object({

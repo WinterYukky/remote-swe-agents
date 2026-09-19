@@ -151,11 +151,37 @@ export const preProcessInput = (
   let thinkingBudget: number | undefined = undefined;
   let reasoningFields: Record<string, unknown> = {};
 
+  // OpenAI models on Bedrock (openai.*) expose reasoning through an
+  // OpenAI-style `reasoning.effort` field, not the Anthropic
+  // `reasoning_config`/`output_config` shape. Detect them by the base modelId
+  // prefix so the reasoning branch below emits the correct request shape.
+  const isOpenAiModel = modelConfig.modelId.startsWith('openai.');
+
   if (enableReasoning) {
     // Detect if we need to adjust the thinking budget based on keywords
     const enableUltraThink = shouldUltraThink(input);
 
-    if (modelConfig.adaptiveThinkingOnly) {
+    if (isOpenAiModel) {
+      // OpenAI-style reasoning: a single categorical `effort` level, not a
+      // token budget. Accepted values are none/low/medium/high/xhigh/max
+      // (verified against the real Converse API for openai.gpt-6-astra).
+      // Default to 'high' — a solidly elevated tier for agentic coding without
+      // the extra latency/cost of xhigh/max on every turn — and escalate to
+      // 'max' on the ultrathink keyword. (This mirrors the intent of the
+      // adaptive-Claude branch's xhigh/max effort mapping, but picks 'high' as
+      // the non-ultra default deliberately for the per-turn cost/latency
+      // balance.) `effort` is categorical, so no numeric thinkingBudget is set.
+      reasoningFields = {
+        reasoning: { effort: enableUltraThink ? 'max' : 'high' },
+      };
+      // Reasoning tokens are billed/emitted separately from the visible answer,
+      // so give the response the model's full output headroom (same as the
+      // adaptive branch) rather than the small default budget.
+      input.inferenceConfig = {
+        ...input.inferenceConfig,
+        maxTokens: modelConfig.maxOutputTokens,
+      };
+    } else if (modelConfig.adaptiveThinkingOnly) {
       // Opus 4.7+ only supports adaptive thinking (type: 'enabled' returns 400)
       // Interleaved thinking is automatically enabled with adaptive mode (no beta header needed)
       reasoningFields = {
@@ -186,7 +212,10 @@ export const preProcessInput = (
     }
 
     // Adjust output tokens as well
-    if (modelConfig.adaptiveThinkingOnly) {
+    if (isOpenAiModel) {
+      // OpenAI reasoning has no token budget; maxTokens was already set to the
+      // full output headroom in the openai branch above. Leave it untouched.
+    } else if (modelConfig.adaptiveThinkingOnly) {
       // For adaptive thinking models, use the full maxOutputTokens
       input.inferenceConfig = {
         ...input.inferenceConfig,
@@ -202,12 +231,22 @@ export const preProcessInput = (
   } else {
     // when we disable reasoning, we have to remove
     // reasoningContent blocks from all the previous message contents
-    input.messages = input.messages?.map((message) => {
-      message.content = message.content?.filter((c) => {
-        return !('reasoningContent' in c);
-      });
-      return message;
-    });
+    input.messages = input.messages
+      ?.map((message) => {
+        message.content = message.content?.filter((c) => {
+          return !('reasoningContent' in c);
+        });
+        return message;
+      })
+      // A message whose ONLY content was reasoningContent (e.g. a GPT-6 Astra
+      // end-of-turn assistant that delivered its text via a tool and emitted no
+      // plain text) becomes empty after the strip above. Bedrock rejects an
+      // empty content array ("The content field in the Message object at
+      // messages.N is empty"), so drop such now-empty messages entirely. This
+      // is safe for toolUse/toolResult pairing (a reasoning-only message has no
+      // toolUse) and for role alternation (Converse accepts consecutive
+      // same-role messages — verified against the real API).
+      .filter((message) => (message.content?.length ?? 0) > 0);
   }
 
   input.additionalModelRequestFields = deepMerge(

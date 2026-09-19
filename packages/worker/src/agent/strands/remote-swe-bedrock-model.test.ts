@@ -64,6 +64,24 @@ describe('synthesizeStream', () => {
     expect(delta.delta).toMatchObject({ type: 'reasoningContentDelta', text: 'thinking', signature: 'sig' });
   });
 
+  it('forwards redactedContent on the reasoningContentDelta (OpenAI redacted reasoning)', () => {
+    // Regression guard for the production reasoning-drop bug: GPT-6 Astra returns
+    // reasoning as reasoningContent.redactedContent (bytes) only. If the delta
+    // does not carry redactedContent, the SDK accumulator produces no reasoning
+    // block and it vanishes from the assistant message + persisted history.
+    const redacted = new Uint8Array([1, 2, 3, 4]);
+    const events = collect(
+      { role: 'assistant', content: [{ reasoningContent: { redactedContent: redacted } } as any] },
+      'end_turn'
+    );
+    const delta = events.find((e) => e.type === 'modelContentBlockDeltaEvent');
+    expect(delta.delta.type).toBe('reasoningContentDelta');
+    expect(delta.delta.redactedContent).toBe(redacted);
+    // Must not fabricate text/signature for a purely-redacted block.
+    expect(delta.delta.text).toBeUndefined();
+    expect(delta.delta.signature).toBeUndefined();
+  });
+
   it('omits the metadata event when usage is absent', () => {
     const events = collect({ role: 'assistant', content: [{ text: 'x' }] }, 'end_turn');
     expect(events.find((e) => e.type === 'modelMetadataEvent')).toBeUndefined();

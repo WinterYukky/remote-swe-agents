@@ -522,6 +522,21 @@ const preProcessMessageContent = async (content: Message['content'], workerId: s
   content = structuredClone(content) ?? [];
 
   for (const c of content) {
+    // Base64-encode redacted reasoning bytes before JSON serialization.
+    // OpenAI models (e.g. gpt-6-astra) return reasoning as
+    // reasoningContent.redactedContent: Uint8Array. JSON.stringify turns a
+    // Uint8Array/Buffer into an index-keyed object (`{"0":..,"1":..}`) which
+    // the load path (message-converter) cannot reconstruct, silently corrupting
+    // the reasoning block on the next turn. The converter's load side already
+    // accepts a base64 string for redactedContent, so persist it as one.
+    const rc = (c as { reasoningContent?: { redactedContent?: unknown } }).reasoningContent;
+    if (rc?.redactedContent != null) {
+      const raw = rc.redactedContent;
+      if (raw instanceof Uint8Array || Buffer.isBuffer(raw)) {
+        rc.redactedContent = Buffer.from(raw).toString('base64');
+      }
+    }
+
     // store image in toolResult content to S3
     if (c.toolResult?.content) {
       for (const cc of c.toolResult.content) {
@@ -729,6 +744,22 @@ const postProcessMessageContent = async (content: string, forUi = false, isTopLe
   const flattenedArray = [];
 
   for (const c of contentArray) {
+    // Decode redacted reasoning bytes back from the persisted base64 string.
+    // preProcessMessageContent stores reasoningContent.redactedContent (from
+    // OpenAI models, e.g. gpt-6-astra) as a base64 string. The production
+    // request-build path (getItems -> noOpFiltering/middleOutFiltering ->
+    // itemsToMessages -> here) feeds this straight into Bedrock's
+    // ConverseCommand, whose serializer base64-encodes bytes. If we leave a
+    // string, @smithy/util-base64 toBase64 treats it as UTF-8 text and
+    // DOUBLE-encodes it on the wire (corrupting the signature the model must
+    // see). Rehydrate to bytes here (symmetric with the image rehydrate path).
+    // Skipped in forUi mode: the webapp never re-sends history to the model.
+    const rc = (c as { reasoningContent?: { redactedContent?: unknown } }).reasoningContent;
+    if (!forUi && typeof rc?.redactedContent === 'string') {
+      rc.redactedContent = Buffer.from(rc.redactedContent, 'base64');
+      flattenedArray.push(c);
+      continue;
+    }
     if (typeof c.image?.source?.s3Key == 'string') {
       if (forUi) {
         flattenedArray.push(c);

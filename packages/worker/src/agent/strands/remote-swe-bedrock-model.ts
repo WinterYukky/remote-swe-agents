@@ -128,7 +128,15 @@ export function* synthesizeStream(
       } as ModelStreamEvent;
       yield { type: 'modelContentBlockStopEvent' } as ModelStreamEvent;
     } else if ('reasoningContent' in block && block.reasoningContent) {
-      const rt = block.reasoningContent.reasoningText;
+      const rc = block.reasoningContent;
+      const rt = rc.reasoningText;
+      // Redacted reasoning ({ redactedContent: Uint8Array }) is a distinct union
+      // member, mutually exclusive with reasoningText, produced by OpenAI models
+      // (e.g. gpt-6-astra). It MUST be forwarded on the delta — the SDK
+      // accumulator keys the ReasoningBlock off any of text/signature/
+      // redactedContent, so dropping it here makes the whole reasoning block
+      // vanish from the assistant message (and the persisted history).
+      const redactedContent = (rc as { redactedContent?: Uint8Array }).redactedContent;
       yield { type: 'modelContentBlockStartEvent' } as ModelStreamEvent;
       yield {
         type: 'modelContentBlockDeltaEvent',
@@ -136,6 +144,7 @@ export function* synthesizeStream(
           type: 'reasoningContentDelta',
           ...(typeof rt?.text === 'string' ? { text: rt.text } : {}),
           ...(typeof rt?.signature === 'string' ? { signature: rt.signature } : {}),
+          ...(redactedContent != null ? { redactedContent } : {}),
         },
       } as ModelStreamEvent;
       yield { type: 'modelContentBlockStopEvent' } as ModelStreamEvent;

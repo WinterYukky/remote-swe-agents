@@ -44,8 +44,8 @@ describe('resolveModelConfig', () => {
   });
 
   describe('bedrockModel resolution', () => {
-    test('defaults to defaultAgentConfig.defaultModel when nothing is set', () => {
-      expect(resolveModelConfig({}).bedrockModel).toBe('sonnet4.6');
+    test('defaults to sonnet5 when nothing is set', () => {
+      expect(resolveModelConfig({}).bedrockModel).toBe('sonnet5');
     });
 
     test('new field bedrockDefaultModel takes priority over legacy defaultModel within same source', () => {

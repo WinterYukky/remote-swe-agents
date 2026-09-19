@@ -1,7 +1,28 @@
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { ddb, TableName } from './aws/ddb';
-import { modelConfigs } from '../schema/model';
+import { criRegions, modelConfigs } from '../schema/model';
 import { updateSession } from './sessions';
+
+// Cross-region inference (CRI) profile prefixes that may be prepended to a
+// base model id at invoke time (see chooseModelAndRegion in converse.ts).
+// A stored token-usage modelId is either a bare base id (`anthropic.claude-*`)
+// or a region-prefixed CRI profile id (`us.anthropic.claude-*`). Derived from
+// the single `criRegions` source in schema/model.ts so a new region added
+// there is automatically honoured here.
+const CRI_PREFIXES: readonly string[] = criRegions;
+
+/**
+ * Strip a leading CRI region prefix from a runtime modelId, leaving the base
+ * model id used as the `modelId` key in modelConfigs.
+ * e.g. `us.anthropic.claude-fable-5-1` -> `anthropic.claude-fable-5-1`.
+ */
+const stripCriPrefix = (modelId: string): string => {
+  const dot = modelId.indexOf('.');
+  if (dot > 0 && CRI_PREFIXES.includes(modelId.slice(0, dot))) {
+    return modelId.slice(dot + 1);
+  }
+  return modelId;
+};
 
 // Calculate cost in USD based on token usage
 export const calculateCost = (
@@ -11,8 +32,19 @@ export const calculateCost = (
   cacheReadTokens: number,
   cacheWriteTokens: number
 ) => {
-  const config = Object.values(modelConfigs).find((config) => modelId.includes(config.modelId));
-  if (!config) return 0;
+  // Exact match on the base model id (after removing any CRI region prefix).
+  // Substring matching is unsafe because base ids can be prefixes of one
+  // another (e.g. `anthropic.claude-fable-5` vs `anthropic.claude-fable-5-1`),
+  // which would mis-price the longer id with the shorter id's config.
+  const baseModelId = stripCriPrefix(modelId);
+  const config = Object.values(modelConfigs).find((config) => config.modelId === baseModelId);
+  if (!config) {
+    // Exact match means an unknown/removed modelId now yields cost 0 silently.
+    // Warn so a future catalog drift (e.g. a new region prefix or renamed id)
+    // is noticed instead of quietly under-counting cost.
+    console.warn(`calculateCost: no pricing config for modelId "${modelId}" (base "${baseModelId}"); counting as 0`);
+    return 0;
+  }
 
   const pricing = config.pricing;
   return (

@@ -927,3 +927,79 @@ describe('sendSystemMessage — lastMessageUpdate', () => {
     expect(mockUpdateSessionLastMessage).toHaveBeenCalledWith('w1', 'x'.repeat(500));
   });
 });
+
+// ----------------------------------------------------------------------------
+// redacted reasoning persistence round-trip (GPT-6 Astra / openai.*).
+//
+// GPT-6 Astra returns reasoning as reasoningContent.redactedContent: Uint8Array.
+// A raw Uint8Array/Buffer JSON.stringify's to an index-keyed object
+// (`{"0":..}`) which corrupts on load. saveConversationHistory's
+// preProcessMessageContent base64-encodes it for storage; the load path
+// (postProcessMessageContent, non-forUi) MUST decode it back to bytes, because
+// the Bedrock ConverseCommand serializer double-encodes a leftover string on
+// the wire (verified by the wire-level regression test).
+// ----------------------------------------------------------------------------
+describe('redacted reasoning persistence round-trip', () => {
+  beforeEach(() => {
+    mockSend.mockReset();
+    mockPaginateQuery.mockReset();
+  });
+
+  test('saveConversationHistory persists reasoningContent.redactedContent as a base64 string, not an index-keyed object', async () => {
+    mockSend.mockResolvedValue({});
+    const redacted = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    const expectedB64 = Buffer.from(redacted).toString('base64');
+
+    await saveConversationHistory(
+      'worker-redacted',
+      { role: 'assistant', content: [{ reasoningContent: { redactedContent: redacted } } as any, { text: 'answer' }] },
+      0,
+      'assistant'
+    );
+
+    // Capture the exact string persisted to DDB.
+    const putInput = (mockSend.mock.calls[0][0] as any).input;
+    const persisted = putInput.Item.content as string;
+    // Must contain the base64 string and must NOT contain the index-keyed
+    // Uint8Array serialization (`"0":`) that JSON.stringify would produce.
+    const parsed = JSON.parse(persisted);
+    expect(parsed[0].reasoningContent.redactedContent).toBe(expectedB64);
+    expect(typeof parsed[0].reasoningContent.redactedContent).toBe('string');
+    expect(persisted).not.toContain('"0":');
+  });
+
+  test('load path (noOpFiltering) restores redactedContent to bytes for the Bedrock request', async () => {
+    mockSend.mockResolvedValue({});
+    const redacted = new Uint8Array([1, 2, 3, 4, 5]);
+
+    // Write via the real production path.
+    await saveConversationHistory(
+      'worker-redacted',
+      { role: 'assistant', content: [{ reasoningContent: { redactedContent: redacted } } as any] },
+      0,
+      'assistant'
+    );
+    const persisted = (mockSend.mock.calls[0][0] as any).input.Item.content as string;
+
+    // Feed the persisted item back through the real load path (the same path
+    // the worker's request-build uses: getItems -> noOpFiltering ->
+    // itemsToMessages -> postProcessMessageContent).
+    const item: MessageItem = {
+      PK: 'message-worker-redacted',
+      SK: '000000000000001',
+      content: persisted,
+      role: 'assistant',
+      tokenCount: 0,
+      messageType: 'assistant',
+    } as MessageItem;
+    const { messages } = await noOpFiltering([item]);
+    const block = (messages[0].content as any[])[0];
+    // MUST be decoded back to the original bytes — NOT left as a base64 string.
+    // A leftover string is double-encoded by the Bedrock serializer on the wire
+    // (see the wire-level regression test), corrupting the model's reasoning.
+    const rebuilt = block.reasoningContent.redactedContent;
+    expect(typeof rebuilt).not.toBe('string');
+    expect(rebuilt instanceof Uint8Array || Buffer.isBuffer(rebuilt)).toBe(true);
+    expect([...Buffer.from(rebuilt)]).toEqual([1, 2, 3, 4, 5]);
+  });
+});
