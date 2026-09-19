@@ -5,6 +5,7 @@ import { Loader2, ExternalLink, X } from 'lucide-react';
 import { getImageUrls } from '@/actions/image/action';
 import { claimForMessage, isUsable, releaseFromMessage, scheduleReleaseFromMessage } from '@/lib/local-image-urls';
 import { useBodyScrollLock } from '@/hooks/use-body-scroll-lock';
+import { buildInitialImages, isImageKey, type ImageData } from './image-viewer-utils';
 
 type ImageViewerProps = {
   imageKeys: string[];
@@ -16,13 +17,6 @@ type ImageViewerProps = {
    * loaded (no flicker), at which point the blob is revoked.
    */
   localImageUrls?: Record<string, string>;
-};
-
-type ImageData = {
-  key: string;
-  url: string;
-  loading: boolean;
-  error: boolean;
 };
 
 /**
@@ -48,10 +42,18 @@ export const ImageViewer = ({ imageKeys: inputKeys, localImageUrls }: ImageViewe
       .filter(([, url]) => isUsable(url))
       .map(([key, url]) => ({ key, url, loading: false, error: false }));
   });
-  const [images, setImages] = useState<ImageData[]>([]);
   const [imageCache, setImageCache] = useState<Map<string, ImageData>>(
     () => new Map(seededEntries.map((entry) => [entry.key, entry]))
   );
+  // Seed `images` synchronously on first render so every image reserves its
+  // fixed-size (w-32 h-24) placeholder slot in the very first paint. If this
+  // started empty and were populated only in the effect below, the container
+  // would render at 0 height first and then jump once the effect committed —
+  // a layout shift that, multiplied across a history full of images, drifts
+  // the initial "scroll to latest" position (the reported bug). Keys already
+  // backed by a usable blob paint their preview immediately; the rest start
+  // in the fixed-size loading state.
+  const [images, setImages] = useState<ImageData[]>(() => buildInitialImages(inputKeys, seededEntries));
 
   // Blob lifecycle (see lib/local-image-urls.ts): claim ownership for this
   // message on mount; on unmount, schedule a token-guarded deferred release
@@ -69,20 +71,7 @@ export const ImageViewer = ({ imageKeys: inputKeys, localImageUrls }: ImageViewe
     };
   }, [seededEntries]);
   const [previewImage, setPreviewImage] = useState<ImageData | null>(null);
-  const imageKeys = useMemo(
-    () =>
-      inputKeys.filter(
-        (key) =>
-          key.endsWith('.jpg') ||
-          key.endsWith('.jpeg') ||
-          key.endsWith('.png') ||
-          key.endsWith('.webp') ||
-          key.endsWith('.svg') ||
-          key.endsWith('.gif') ||
-          false
-      ),
-    [inputKeys]
-  );
+  const imageKeys = useMemo(() => inputKeys.filter(isImageKey), [inputKeys]);
 
   useEffect(() => {
     // Cancellation guard (W1): the async pipeline below (getImageUrls →

@@ -168,25 +168,36 @@ export function useImageUploader({ workerId, onImagesChange, onFilesChange, onPa
     [workerId]
   );
 
-  const handleFileChange = useCallback(
-    async (e: ChangeEvent<HTMLInputElement>) => {
-      const files = e.target.files;
-      if (!files || files.length === 0) return;
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
+  // Shared attachment intake for every entry point (file picker, drag & drop):
+  // each file is routed through the exact same image/non-image split and the
+  // same S3 pre-signed PUT upload + preview registration, so drops behave
+  // identically to picks (same validation, same preview strip).
+  const processFiles = useCallback(
+    async (files: FileList | File[]) => {
+      const list = Array.from(files);
+      for (const file of list) {
         if (isImageContentType(file.type)) {
           await processAndUploadImage(file);
         } else {
           await processAndUploadFile(file);
         }
       }
+    },
+    [processAndUploadImage, processAndUploadFile]
+  );
+
+  const handleFileChange = useCallback(
+    async (e: ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+
+      await processFiles(files);
 
       // Reset the input value so picking the same file twice in a row still
       // fires `change` the second time.
       if (generalFileInputRef.current) generalFileInputRef.current.value = '';
     },
-    [processAndUploadImage, processAndUploadFile]
+    [processFiles]
   );
 
   const handlePaste = useCallback(
@@ -514,6 +525,7 @@ export function useImageUploader({ workerId, onImagesChange, onFilesChange, onPa
     uploadingFiles,
     handleFileSelect,
     handlePaste,
+    processFiles,
     clearImages,
     restoreFromKeys,
     restoreKeyOnlyImages,

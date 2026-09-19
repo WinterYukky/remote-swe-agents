@@ -22,6 +22,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Form, FormControl, FormField } from '@/components/ui/form';
 import { useState, useEffect, useMemo, useRef } from 'react';
+import { handleAttachmentDrop, isFileDrag } from '@/lib/drag-drop-attach';
 import { getUserPreferencesAction, checkKiroApiKeyAction } from '../../preferences/actions';
 import TemplateModal from './TemplateModal';
 import {
@@ -233,6 +234,7 @@ export default function NewSessionForm({
     uploadingFiles,
     handleFileSelect,
     handlePaste,
+    processFiles,
     ImagePreviewList,
     isUploading,
     restoreFromKeys,
@@ -245,6 +247,62 @@ export default function NewSessionForm({
     },
   });
   restoreFromKeysRef.current = restoreFromKeys;
+
+  // Drag & drop attachment intake — routes through the same `processFiles`
+  // as the file picker so drops behave identically to picks. A counter
+  // tracks enter/leave so hovering child elements does not flicker the
+  // highlight (see MessageForm for the same pattern).
+  const [isDragActive, setIsDragActive] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    if (isPending) return;
+    if (!isFileDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    dragCounterRef.current += 1;
+    setIsDragActive(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    if (!isFileDrag(e.dataTransfer)) return;
+    e.preventDefault();
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (!isFileDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragActive(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    dragCounterRef.current = 0;
+    setIsDragActive(false);
+    handleAttachmentDrop({
+      dataTransfer: e.dataTransfer,
+      disabled: isPending,
+      preventDefault: () => e.preventDefault(),
+      onFiles: (files) => void processFiles(files),
+    });
+  };
+
+  // Prevent the browser from opening a file dropped outside the drop zone and
+  // navigating away (which would discard the form). Also covers drops the busy
+  // guard ignores. Listeners are mounted only while this component is mounted.
+  useEffect(() => {
+    const prevent = (e: DragEvent) => {
+      if (isFileDrag(e.dataTransfer)) e.preventDefault();
+    };
+    window.addEventListener('dragover', prevent);
+    window.addEventListener('drop', prevent);
+    return () => {
+      window.removeEventListener('dragover', prevent);
+      window.removeEventListener('drop', prevent);
+    };
+  }, []);
 
   const handleTemplateSelect = (template: PromptTemplate) => {
     setValue('message', template.content, { shouldValidate: true });
@@ -263,7 +321,15 @@ export default function NewSessionForm({
   return (
     <Form {...form}>
       <form onSubmit={handleSubmitWithAction} className="space-y-6">
-        <div className="text-left">
+        <div
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`text-left rounded-lg border-2 border-dashed transition-colors ${
+            isDragActive ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'border-transparent'
+          }`}
+        >
           <ImagePreviewList />
 
           {/* Custom Agent Selection */}
@@ -300,24 +366,26 @@ export default function NewSessionForm({
                         <span className="text-sm text-gray-500">{t('defaultAgentDescription')}</span>
                       </div>
                     </SelectItem>
-                    {customAgents.map((agent) => (
-                      <SelectItem key={agent.SK} value={agent.SK}>
-                        <div className="flex items-center gap-2">
-                          {agentIconUrls[agent.SK] && (
-                            /* eslint-disable-next-line @next/next/no-img-element */
-                            <img
-                              src={agentIconUrls[agent.SK]}
-                              alt={agent.name}
-                              className="w-5 h-5 rounded-full object-cover flex-shrink-0"
-                            />
-                          )}
-                          <div className="flex flex-col">
-                            <span className="font-medium">{agent.name}</span>
-                            <span className="text-sm text-gray-500">{agent.description}</span>
+                    {customAgents
+                      .filter((agent) => !agent.parentAgentId)
+                      .map((agent) => (
+                        <SelectItem key={agent.SK} value={agent.SK}>
+                          <div className="flex items-center gap-2">
+                            {agentIconUrls[agent.SK] && (
+                              /* eslint-disable-next-line @next/next/no-img-element */
+                              <img
+                                src={agentIconUrls[agent.SK]}
+                                alt={agent.name}
+                                className="w-5 h-5 rounded-full object-cover flex-shrink-0"
+                              />
+                            )}
+                            <div className="flex flex-col">
+                              <span className="font-medium">{agent.name}</span>
+                              <span className="text-sm text-gray-500">{agent.description}</span>
+                            </div>
                           </div>
-                        </div>
-                      </SelectItem>
-                    ))}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
               )}

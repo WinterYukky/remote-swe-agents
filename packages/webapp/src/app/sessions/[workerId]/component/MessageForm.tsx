@@ -8,7 +8,8 @@ import { Loader2, Send, Paperclip, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { sendMessageToAgent, updateSessionModel } from '../actions';
 import { sendMessageToAgentSchema } from '../schemas';
-import { KeyboardEventHandler, useCallback, useEffect, useRef } from 'react';
+import { KeyboardEventHandler, useCallback, useEffect, useRef, useState } from 'react';
+import { handleAttachmentDrop, isFileDrag } from '@/lib/drag-drop-attach';
 import { MessageView } from './MessageList';
 import { useTranslations } from 'next-intl';
 import { useImageUploader, type TakenOverAttachments } from '@/components/ImageUploader';
@@ -618,6 +619,7 @@ export default function MessageForm({
     uploadingFiles,
     handleFileSelect,
     handlePaste,
+    processFiles,
     ImagePreviewList,
     clearImages,
     restoreFromKeys,
@@ -646,6 +648,71 @@ export default function MessageForm({
   restoreKeyOnlyImagesRef.current = restoreKeyOnlyImages;
 
   const isUploading = isUploadingFiles;
+
+  // Drag & drop attachment intake. Drops route through the SAME `processFiles`
+  // as the file picker, so validation, upload, and preview are identical.
+  // A counter (not a boolean) tracks enter/leave so moving the pointer over
+  // child elements does not flicker the highlight off (each child fires its
+  // own dragenter/dragleave pair).
+  const [isDragActive, setIsDragActive] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = useCallback(
+    (e: React.DragEvent) => {
+      if (isExecuting) return;
+      if (!isFileDrag(e.dataTransfer)) return;
+      e.preventDefault();
+      dragCounterRef.current += 1;
+      setIsDragActive(true);
+    },
+    [isExecuting]
+  );
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!isFileDrag(e.dataTransfer)) return;
+    e.preventDefault();
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!isFileDrag(e.dataTransfer)) return;
+    e.preventDefault();
+    dragCounterRef.current -= 1;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragActive(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      dragCounterRef.current = 0;
+      setIsDragActive(false);
+      handleAttachmentDrop({
+        dataTransfer: e.dataTransfer,
+        disabled: isExecuting,
+        preventDefault: () => e.preventDefault(),
+        onFiles: (files) => void processFiles(files),
+      });
+    },
+    [isExecuting, processFiles]
+  );
+
+  // Prevent the browser's default "open the dropped file and navigate away"
+  // behavior when a file is dropped OUTSIDE the drop zone (which would discard
+  // the in-progress draft). Also covers drops the busy guard ignores, for which
+  // the local handler intentionally does not call preventDefault. Listeners
+  // live only while this component is mounted — not app-wide.
+  useEffect(() => {
+    const prevent = (e: DragEvent) => {
+      if (isFileDrag(e.dataTransfer)) e.preventDefault();
+    };
+    window.addEventListener('dragover', prevent);
+    window.addEventListener('drop', prevent);
+    return () => {
+      window.removeEventListener('dragover', prevent);
+      window.removeEventListener('drop', prevent);
+    };
+  }, []);
 
   const handleOptimisticSubmit = useCallback(
     (e?: React.BaseSyntheticEvent, opts?: { clientId?: string }) => {
@@ -765,7 +832,17 @@ export default function MessageForm({
         <form onSubmit={handleOptimisticSubmit} className="flex flex-col gap-4">
           <ImagePreviewList />
 
-          <div className="border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 focus-within:border-gray-400 dark:focus-within:border-gray-500">
+          <div
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className={`border rounded-lg bg-white dark:bg-gray-700 transition-colors ${
+              isDragActive
+                ? 'border-blue-500 border-dashed bg-blue-50 dark:bg-blue-900/20'
+                : 'border-gray-300 dark:border-gray-600 focus-within:border-gray-400 dark:focus-within:border-gray-500'
+            }`}
+          >
             <textarea
               // https://qiita.com/P-man_Brown/items/63fc7d281baae22c74e5
               {...messageRegister}
