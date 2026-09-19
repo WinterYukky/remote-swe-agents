@@ -6,6 +6,7 @@ import type { ToolDefinition } from '../private/common/lib';
 import { zodToJsonSchemaBody } from '../private/common/lib';
 import { kiroExportedTools } from './selection';
 import { readEnvContext, resolveGlobalPreferences, type McpContextEnv } from './context';
+import { adoptPreview, detachPreview } from '../tools/preview';
 
 /**
  * Names of the REQUIRED parameters of a tool, derived from its JSON Schema
@@ -160,8 +161,29 @@ export const runStdioServer = async (): Promise<void> => {
   const onStdinClosed = () => {
     if (closeHandled) return;
     closeHandled = true;
+    try {
+      detachPreview();
+    } catch (e) {
+      console.error('[mcp-server] detach on stdin EOF failed:', e);
+    }
     setTimeout(() => process.exit(0), 5000).unref();
   };
   process.stdin.on('end', onStdinClosed);
   process.stdin.on('close', onStdinClosed);
+
+  // Eager preview adopt: a kiro-cli respawn (SIGTERM on the previous MCP
+  // subprocess) tears down the in-process tunnel but leaves the MicroVM +
+  // its DDB `preview-token` record alive. Re-attach to it here so the preview
+  // auto-recovers on the next turn without the agent re-calling openPreview.
+  // Best-effort: adoptPreview is a no-op when there is nothing to adopt or the
+  // MicroVM is gone, and never throws out of here.
+  try {
+    const { workerId } = readEnvContext();
+    const adopted = await adoptPreview(workerId);
+    if (adopted) {
+      console.error(`[mcp-server] adopted existing preview for ${workerId} on port ${adopted.localPort}`);
+    }
+  } catch (e) {
+    console.error('[mcp-server] preview adopt on startup failed (non-fatal):', e);
+  }
 };
