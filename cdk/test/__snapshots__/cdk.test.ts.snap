@@ -5637,6 +5637,17 @@ exports.handler = async (event) => {
                     [
                       "arn:aws:ssm:us-east-1:123456789012:parameter",
                       {
+                        "Ref": "WorkerAgentCoreRuntimeEnvParameter97A37AE8",
+                      },
+                    ],
+                  ],
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:ssm:us-east-1:123456789012:parameter",
+                      {
                         "Ref": "WorkerAmiId428C377C",
                       },
                     ],
@@ -5811,6 +5822,7 @@ exports.handler = async (event) => {
       "DependsOn": [
         "WorkerAgentCoreRoleDefaultPolicyD5F17E82",
         "WorkerAgentCoreRoleD7B5DD19",
+        "WorkerAgentCoreRuntimeEnvParameter97A37AE8",
       ],
       "Properties": {
         "AgentRuntimeArtifact": {
@@ -5875,88 +5887,13 @@ exports.handler = async (event) => {
         "AgentRuntimeName": "TestMainStackWorkerAgentCoreD650A7D5",
         "EnvironmentVariables": {
           "AWS_REGION": "us-east-1",
-          "BEDROCK_CRI_REGION_OVERRIDE": "global",
-          "BUCKET_NAME": {
-            "Ref": "StorageImageBucket99BA9550",
-          },
-          "EVENT_HTTP_ENDPOINT": {
-            "Fn::Join": [
-              "",
-              [
-                "https://",
-                {
-                  "Fn::GetAtt": [
-                    "WorkerBusApi8460ABC0",
-                    "Dns.Http",
-                  ],
-                },
-              ],
-            ],
-          },
-          "EVENT_TRIGGER_RESOURCE_PREFIX": "tesger3a47e907",
-          "EVENT_TRIGGER_SFN_ARN": {
-            "Ref": "WorkerEventTriggerHandlerStateMachineA5E6B715",
-          },
-          "EVENT_TRIGGER_SFN_ROLE_ARN": {
-            "Fn::GetAtt": [
-              "WorkerEventTriggerSchedulerRoleBA58E2C1",
-              "Arn",
-            ],
-          },
-          "EVENT_TRIGGER_TTL_SFN_ARN": {
-            "Ref": "WorkerEventTriggerTtlStateMachine26E82361",
-          },
-          "EVENT_TRIGGER_TTL_SFN_ROLE_ARN": {
-            "Fn::GetAtt": [
-              "WorkerEventTriggerSchedulerRoleBA58E2C1",
-              "Arn",
-            ],
-          },
-          "GITHUB_APP_ID": "123456",
-          "GITHUB_APP_INSTALLATION_ID": "9876543",
           "GITHUB_APP_PRIVATE_KEY_PARAMETER_NAME": "/remote-swe/github/app-private-key",
           "GITHUB_PERSONAL_ACCESS_TOKEN_PARAMETER_NAME": "",
-          "SKILL_BUCKET_NAME": {
-            "Ref": "StorageSkillBucket76CA6B72",
+          "RUNTIME_ENV_PARAMETER_NAME": {
+            "Ref": "WorkerAgentCoreRuntimeEnvParameter97A37AE8",
           },
           "SLACK_BOT_TOKEN_PARAMETER_NAME": "/remote-swe/slack/bot-token",
           "STACK_NAME": "TestMainStack",
-          "SUBNET_ID_LIST": {
-            "Fn::Join": [
-              "",
-              [
-                {
-                  "Ref": "VpcV2PublicSubnet1SubnetD67FC535",
-                },
-                ",",
-                {
-                  "Ref": "VpcV2PublicSubnet2Subnet63F50919",
-                },
-                ",",
-                {
-                  "Ref": "VpcV2PublicSubnet3SubnetC2A8D2E4",
-                },
-              ],
-            ],
-          },
-          "TABLE_NAME": {
-            "Ref": "StorageHistory251A3AE8",
-          },
-          "VAPID_PRIVATE_KEY_PARAMETER_NAME": {
-            "Ref": "VapidKeysPrivateKeyBA530D10",
-          },
-          "VAPID_PUBLIC_KEY_PARAMETER_NAME": {
-            "Ref": "VapidKeysPublicKeyCCE9E4A7",
-          },
-          "WEBAPP_ORIGIN_NAME_PARAMETER": {
-            "Ref": "WebappOriginNameParameterBBAD7F85",
-          },
-          "WORKER_AMI_PARAMETER_NAME": {
-            "Ref": "WorkerAmiId428C377C",
-          },
-          "WORKER_LAUNCH_TEMPLATE_ID": {
-            "Ref": "WorkerLaunchTemplateCB68F8E3",
-          },
           "WORKER_RUNTIME": "agent-core",
         },
         "NetworkConfiguration": {
@@ -5971,6 +5908,94 @@ exports.handler = async (event) => {
         },
       },
       "Type": "AWS::BedrockAgentCore::Runtime",
+    },
+    "WorkerAgentCoreRuntimeEnvParameter97A37AE8": {
+      "Properties": {
+        "Name": "/TestMainStack/agent-core/runtime-env",
+        "Type": "String",
+        "Value": {
+          "Fn::Join": [
+            "",
+            [
+              "{"EVENT_HTTP_ENDPOINT":"https://",
+              {
+                "Fn::GetAtt": [
+                  "WorkerBusApi8460ABC0",
+                  "Dns.Http",
+                ],
+              },
+              "","GITHUB_APP_ID":"123456","GITHUB_APP_INSTALLATION_ID":"9876543","TABLE_NAME":"",
+              {
+                "Ref": "StorageHistory251A3AE8",
+              },
+              "","BUCKET_NAME":"",
+              {
+                "Ref": "StorageImageBucket99BA9550",
+              },
+              "","SKILL_BUCKET_NAME":"",
+              {
+                "Ref": "StorageSkillBucket76CA6B72",
+              },
+              "","WEBAPP_ORIGIN_NAME_PARAMETER":"",
+              {
+                "Ref": "WebappOriginNameParameterBBAD7F85",
+              },
+              "","BEDROCK_CRI_REGION_OVERRIDE":"global","VAPID_PUBLIC_KEY_PARAMETER_NAME":"",
+              {
+                "Ref": "VapidKeysPublicKeyCCE9E4A7",
+              },
+              "","VAPID_PRIVATE_KEY_PARAMETER_NAME":"",
+              {
+                "Ref": "VapidKeysPrivateKeyBA530D10",
+              },
+              "","EVENT_TRIGGER_SFN_ARN":"",
+              {
+                "Ref": "WorkerEventTriggerHandlerStateMachineA5E6B715",
+              },
+              "","EVENT_TRIGGER_SFN_ROLE_ARN":"",
+              {
+                "Fn::GetAtt": [
+                  "WorkerEventTriggerSchedulerRoleBA58E2C1",
+                  "Arn",
+                ],
+              },
+              "","EVENT_TRIGGER_TTL_SFN_ARN":"",
+              {
+                "Ref": "WorkerEventTriggerTtlStateMachine26E82361",
+              },
+              "","EVENT_TRIGGER_TTL_SFN_ROLE_ARN":"",
+              {
+                "Fn::GetAtt": [
+                  "WorkerEventTriggerSchedulerRoleBA58E2C1",
+                  "Arn",
+                ],
+              },
+              "","EVENT_TRIGGER_RESOURCE_PREFIX":"tesger3a47e907","WORKER_AMI_PARAMETER_NAME":"",
+              {
+                "Ref": "WorkerAmiId428C377C",
+              },
+              "","WORKER_LAUNCH_TEMPLATE_ID":"",
+              {
+                "Ref": "WorkerLaunchTemplateCB68F8E3",
+              },
+              "","SUBNET_ID_LIST":"",
+              {
+                "Ref": "VpcV2PublicSubnet1SubnetD67FC535",
+              },
+              ",",
+              {
+                "Ref": "VpcV2PublicSubnet2Subnet63F50919",
+              },
+              ",",
+              {
+                "Ref": "VpcV2PublicSubnet3SubnetC2A8D2E4",
+              },
+              ""}",
+            ],
+          ],
+        },
+      },
+      "Type": "AWS::SSM::Parameter",
     },
     "WorkerAgentCoreWorkerImage51DBAE8F": {
       "DeletionPolicy": "Delete",

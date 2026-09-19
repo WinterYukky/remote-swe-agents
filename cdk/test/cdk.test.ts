@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
-import { Template } from 'aws-cdk-lib/assertions';
+import { Match, Template } from 'aws-cdk-lib/assertions';
 import { readFileSync } from 'fs';
 import { MainStack } from '../lib/cdk-stack';
 import { UsEast1Stack } from '../lib/us-east-1-stack';
@@ -95,11 +95,23 @@ test('Kiro CLI inference mode wiring (opt-in)', () => {
 
   const template = Template.fromStack(main);
 
-  // The AgentCore runtime receives the Kiro env vars
+  // The Kiro env vars live in the SSM "overflow" parameter (JSON) rather than
+  // the runtime's inline EnvironmentVariables, because the AgentCore V2
+  // env-var payload is capped at 1024 bytes; run.sh loads the parameter and
+  // re-exports each key at startup.
+  const overflowParams = template.findResources('AWS::SSM::Parameter', {
+    Properties: { Name: Match.stringLikeRegexp('agent-core/runtime-env') },
+  });
+  expect(Object.keys(overflowParams)).toHaveLength(1);
+  const overflowValue = JSON.stringify(Object.values(overflowParams)[0].Properties.Value);
+  expect(overflowValue).toContain('KIRO_API_KEY_SSM_PARAM');
+  expect(overflowValue).toContain('/remote-swe/kiro/api-key');
+  expect(overflowValue).toContain('INFERENCE_MODE');
+  expect(overflowValue).toContain('kiro-cli');
+
+  // STACK_NAME stays inline (run.sh-visible before the JSON load)
   template.hasResourceProperties('AWS::BedrockAgentCore::Runtime', {
     EnvironmentVariables: {
-      KIRO_API_KEY_SSM_PARAM: '/remote-swe/kiro/api-key',
-      INFERENCE_MODE: 'kiro-cli',
       STACK_NAME: 'TestMainStackKiro',
     },
   });
@@ -113,4 +125,83 @@ test('Kiro CLI inference mode wiring (opt-in)', () => {
       JSON.stringify(s.Resource).includes('parameter/TestMainStackKiro/users/*/kiro-api-key')
   );
   expect(perUserGrant).toBeDefined();
+});
+
+// Regression guard for the AgentCore V2 env-var payload cap (1024 bytes,
+// summed over key+value). The runtime's inline EnvironmentVariables can grow
+// past that cap as configuration accumulates; the mitigation moves all but a
+// small, deliberately-chosen set into an SSM "overflow" parameter that run.sh
+// re-exports at startup. This test freezes the inline key set so that ANY
+// future addition of a variable directly to the runtime's EnvironmentVariables
+// (instead of the overflow parameter) fails here loudly.
+//
+// Why keys, not bytes: the values are unresolved CFN tokens at synth time, so
+// the resolved byte count is not knowable in a synth-only unit test. Freezing
+// the exact key set is the practical breakwater — a new inline var is exactly
+// the failure mode that reintroduces the payload-cap regression.
+//
+// NOTE on headroom: these 7 inline vars resolve to roughly 320 bytes in a
+// typical deployment, leaving ~700 bytes of margin under the 1024 cap. The
+// dominant variable-length contributor is STACK_NAME (it also appears verbatim
+// inside three of the SSM parameter-NAME references). An extremely long stack
+// name could erode that margin, so if a new stack uses a very long name,
+// re-measure the resolved inline payload rather than assuming the margin holds.
+test('AgentCore runtime inline EnvironmentVariables key set is frozen (V2 1024-byte payload guard)', () => {
+  jest.useFakeTimers().setSystemTime(new Date('2020-01-01'));
+
+  const app = new cdk.App({
+    context: {
+      ...JSON.parse(readFileSync('cdk.json').toString()).context,
+    },
+  });
+
+  const usEast1Stack = new UsEast1Stack(app, 'EnvGuardUsEast1Stack', {
+    env: { account: '123456789012', region: 'us-east-1' },
+    crossRegionReferences: true,
+    allowedIpV4AddressRanges: ['192.168.1.0/24'],
+    allowedIpV6AddressRanges: ['2001:db8::/32'],
+    allowedCountryCodes: ['JP'],
+  });
+
+  const main = new MainStack(app, 'EnvGuardMainStack', {
+    env: { account: '123456789012', region: 'us-east-1' },
+    crossRegionReferences: true,
+    signPayloadHandler: usEast1Stack.signPayloadHandler,
+    cloudFrontWebAclArn: usEast1Stack.webAclArn,
+    slack: {
+      botTokenParameterName: '/remote-swe/slack/bot-token',
+      signingSecretParameterName: '/remote-swe/slack/signing-secret',
+      adminUserIdList: undefined,
+    },
+    github: {
+      privateKeyParameterName: '/remote-swe/github/app-private-key',
+      appId: '123456',
+      installationId: '9876543',
+    },
+    initialWebappUserEmail: 'user@example.com',
+    bedrockCriRegionOverride: 'global',
+  });
+
+  const template = Template.fromStack(main);
+  const runtimes = template.findResources('AWS::BedrockAgentCore::Runtime');
+  const runtimeEntries = Object.values(runtimes);
+  expect(runtimeEntries).toHaveLength(1);
+
+  const inlineEnv = runtimeEntries[0].Properties.EnvironmentVariables as Record<string, unknown>;
+  const actualKeys = Object.keys(inlineEnv).sort();
+
+  // The ONLY variables allowed inline on the runtime. Everything else must live
+  // in the SSM overflow parameter (see AgentCoreRuntime). Adding a key here
+  // without measuring the resolved payload risks the 1024-byte V2 cap.
+  const expectedInlineKeys = [
+    'AWS_REGION',
+    'GITHUB_APP_PRIVATE_KEY_PARAMETER_NAME',
+    'GITHUB_PERSONAL_ACCESS_TOKEN_PARAMETER_NAME',
+    'RUNTIME_ENV_PARAMETER_NAME',
+    'SLACK_BOT_TOKEN_PARAMETER_NAME',
+    'STACK_NAME',
+    'WORKER_RUNTIME',
+  ].sort();
+
+  expect(actualKeys).toEqual(expectedInlineKeys);
 });

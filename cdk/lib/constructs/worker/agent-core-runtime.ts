@@ -13,7 +13,7 @@ import {
   ServicePrincipal,
 } from 'aws-cdk-lib/aws-iam';
 import { IBucket } from 'aws-cdk-lib/aws-s3';
-import { IStringParameter } from 'aws-cdk-lib/aws-ssm';
+import { IStringParameter, StringParameter } from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -202,6 +202,54 @@ export class AgentCoreRuntime extends Construct implements IGrantable {
       workerInstanceRole: props.workerInstanceRole,
     });
 
+    // AgentCore V2 runtimes cap the total environment-variable payload
+    // (sum of key + value bytes) at 1024 bytes. The full worker configuration
+    // (CFN-generated ARNs, resource names, endpoints, SSM parameter-name
+    // references) exceeds that, so we split it in two:
+    //
+    //   1. inline env — the few vars the container's run.sh needs in bash
+    //      BEFORE Node starts (region, worker-runtime marker, and the SSM
+    //      parameter-NAME references that run.sh dereferences to fetch the
+    //      GitHub/Slack secrets), plus the pointer to the overflow parameter.
+    //   2. `overflowEnv` — everything else, serialized to JSON and stored in a
+    //      single SSM String parameter. run.sh loads it and re-exports each key
+    //      into the process env before `exec node`, so every existing
+    //      `process.env.X` consumer keeps working unchanged. All values
+    //      originate inside this same stack, so they are passed by CFN
+    //      reference (never hardcoded).
+    //
+    // This only affects the AgentCore runtime; EC2 workers receive their env
+    // via systemd `Environment=` lines (see worker/index.ts) and are untouched.
+    const overflowEnv: Record<string, string> = {
+      EVENT_HTTP_ENDPOINT: props.bus.httpEndpoint,
+      GITHUB_APP_ID: props.gitHubApp?.appId ?? '',
+      GITHUB_APP_INSTALLATION_ID: props.gitHubApp?.installationId ?? '',
+      TABLE_NAME: props.storageTable.tableName,
+      BUCKET_NAME: props.imageBucket.bucketName,
+      SKILL_BUCKET_NAME: props.skillBucket.bucketName,
+      WEBAPP_ORIGIN_NAME_PARAMETER: props.webappOriginSourceParameter.parameterName,
+      BEDROCK_CRI_REGION_OVERRIDE: props.bedrockCriRegionOverride ?? '',
+      VAPID_PUBLIC_KEY_PARAMETER_NAME: props.vapidKeys.publicKeyParameter.parameterName,
+      VAPID_PRIVATE_KEY_PARAMETER_NAME: props.vapidKeys.privateKeyParameter.parameterName,
+      EVENT_TRIGGER_SFN_ARN: props.eventTrigger.handlerStateMachine.stateMachineArn,
+      EVENT_TRIGGER_SFN_ROLE_ARN: props.eventTrigger.schedulerRole.roleArn,
+      EVENT_TRIGGER_TTL_SFN_ARN: props.eventTrigger.ttlStateMachine.stateMachineArn,
+      EVENT_TRIGGER_TTL_SFN_ROLE_ARN: props.eventTrigger.schedulerRole.roleArn,
+      EVENT_TRIGGER_RESOURCE_PREFIX: props.eventTrigger.resourcePrefix,
+      ...workerLaunchEnv,
+      ...(props.kiroApiKeyParameter ? { KIRO_API_KEY_SSM_PARAM: props.kiroApiKeyParameter.parameterName } : {}),
+      ...(props.inferenceMode ? { INFERENCE_MODE: props.inferenceMode } : {}),
+      ...(props.previewMicrovmImageArn ? { PREVIEW_MICROVM_IMAGE_ARN: props.previewMicrovmImageArn } : {}),
+    };
+
+    const envParameter = new StringParameter(this, 'RuntimeEnvParameter', {
+      parameterName: `/${Stack.of(this).stackName}/agent-core/runtime-env`,
+      // CFN tokens inside the values are resolved by CloudFormation at deploy
+      // time; Stack.toJsonString keeps the token references intact.
+      stringValue: Stack.of(this).toJsonString(overflowEnv),
+    });
+    envParameter.grantRead(role);
+
     const runtime = new CfnRuntime(this, 'Runtime', {
       agentRuntimeName: Names.uniqueResourceName(this, { maxLength: 40 }),
       agentRuntimeArtifact: {
@@ -217,36 +265,21 @@ export class AgentCoreRuntime extends Construct implements IGrantable {
       environmentVariables: {
         AWS_REGION: Stack.of(this).region,
         WORKER_RUNTIME: 'agent-core',
-        EVENT_HTTP_ENDPOINT: props.bus.httpEndpoint,
-        GITHUB_APP_PRIVATE_KEY_PARAMETER_NAME: props.gitHubAppPrivateKeyParameter?.parameterName ?? '',
-        GITHUB_APP_ID: props.gitHubApp?.appId ?? '',
-        GITHUB_APP_INSTALLATION_ID: props.gitHubApp?.installationId ?? '',
-        TABLE_NAME: props.storageTable.tableName,
-        BUCKET_NAME: props.imageBucket.bucketName,
-        SKILL_BUCKET_NAME: props.skillBucket.bucketName,
-        WEBAPP_ORIGIN_NAME_PARAMETER: props.webappOriginSourceParameter.parameterName,
-        // BEDROCK_AWS_ACCOUNTS: props.loadBalancing?.awsAccounts.join(',') ?? '',
-        // BEDROCK_AWS_ROLE_NAME: props.loadBalancing?.roleName ?? '',
-        SLACK_BOT_TOKEN_PARAMETER_NAME: props.slackBotTokenParameter?.parameterName ?? '',
-        GITHUB_PERSONAL_ACCESS_TOKEN_PARAMETER_NAME: props.githubPersonalAccessTokenParameter?.parameterName ?? '',
-        BEDROCK_CRI_REGION_OVERRIDE: props.bedrockCriRegionOverride ?? '',
-        VAPID_PUBLIC_KEY_PARAMETER_NAME: props.vapidKeys.publicKeyParameter.parameterName,
-        VAPID_PRIVATE_KEY_PARAMETER_NAME: props.vapidKeys.privateKeyParameter.parameterName,
-        EVENT_TRIGGER_SFN_ARN: props.eventTrigger.handlerStateMachine.stateMachineArn,
-        EVENT_TRIGGER_SFN_ROLE_ARN: props.eventTrigger.schedulerRole.roleArn,
-        EVENT_TRIGGER_TTL_SFN_ARN: props.eventTrigger.ttlStateMachine.stateMachineArn,
-        EVENT_TRIGGER_TTL_SFN_ROLE_ARN: props.eventTrigger.schedulerRole.roleArn,
-        EVENT_TRIGGER_RESOURCE_PREFIX: props.eventTrigger.resourcePrefix,
-        ...(props.previewMicrovmImageArn ? { PREVIEW_MICROVM_IMAGE_ARN: props.previewMicrovmImageArn } : {}),
         // STACK_NAME is what the worker uses to resolve per-user Kiro API key
         // parameter paths (`/${STACK_NAME}/users/<id>/kiro-api-key`).
         STACK_NAME: Stack.of(this).stackName,
-        ...workerLaunchEnv,
-        ...(props.kiroApiKeyParameter ? { KIRO_API_KEY_SSM_PARAM: props.kiroApiKeyParameter.parameterName } : {}),
-        ...(props.inferenceMode ? { INFERENCE_MODE: props.inferenceMode } : {}),
+        // Secret parameter-NAME references dereferenced by run.sh in bash
+        // before Node starts. Kept inline (not in the overflow parameter) so
+        // the secret-fetch blocks in run.sh do not depend on the JSON load.
+        GITHUB_APP_PRIVATE_KEY_PARAMETER_NAME: props.gitHubAppPrivateKeyParameter?.parameterName ?? '',
+        GITHUB_PERSONAL_ACCESS_TOKEN_PARAMETER_NAME: props.githubPersonalAccessTokenParameter?.parameterName ?? '',
+        SLACK_BOT_TOKEN_PARAMETER_NAME: props.slackBotTokenParameter?.parameterName ?? '',
+        // Pointer to the SSM parameter holding the remaining (overflow) env.
+        RUNTIME_ENV_PARAMETER_NAME: envParameter.parameterName,
       },
     });
     runtime.node.addDependency(role);
+    runtime.node.addDependency(envParameter);
 
     this.runtimeArn = runtime.attrAgentRuntimeArn;
 
