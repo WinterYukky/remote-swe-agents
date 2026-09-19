@@ -207,7 +207,7 @@ describe('v3 unknown-ID hazard guard', () => {
   });
 });
 
-describe('turn-1 synthesis with modelId (loop boundary test)', () => {
+describe('C-1 fix: turn-1 synthesis with modelId (loop boundary test)', () => {
   const testHome = path.join(tmpdir(), `k1-c1-${Date.now()}`);
 
   it('synthesizes session.json with modelId even when history is empty (turn 1)', async () => {
@@ -227,11 +227,11 @@ describe('turn-1 synthesis with modelId (loop boundary test)', () => {
     const consumedTailCount = 1;
     const { itemsToSynth } = computeSynthPlan(history, consumedTailCount);
 
-    // Verify turn-1 produces empty items (the empty-history scenario)
+    // Verify turn-1 produces empty items (the scenario C-1 exposed)
     expect(itemsToSynth).toHaveLength(0);
 
-    // Previously this was gated by `if (itemsToSynth.length > 0)` → skip
-    // Now synthesis runs unconditionally when files don't exist
+    // Pre-C-1: this would have been gated by `if (itemsToSynth.length > 0)` → skip
+    // Post-C-1: synthesis runs unconditionally when files don't exist
     expect(kiroV3SessionFilesExist(sessionId, sessionCwd, testHome)).toBe(false);
 
     await synthesizeKiroSessionFilesV3({

@@ -5,14 +5,20 @@
  * Promise<AgentResult>` and `stream(args) => AsyncGenerator<..., AgentResult>`),
  * built on the official ACP SDK's high-level `ActiveSession`.
  *
- * Design: the compatibility point is the invoke/stream
+ * Design (case A, approved): the compatibility point is the invoke/stream
  * signature (the SDK's internal `InvokableAgent` contract). `invoke()` returns
  * a REAL Strands `AgentResult` (public classes). `stream()` yields our OWN
  * discriminated union `KiroAgentStreamEvent`, NOT Strands' `StreamEvent`
  * subclasses (those require a brand-guarded `LocalAgent` and are @internal —
  * faking them is an SDK contract violation).
  *
- * Tool-output decoding delegates to the shared agent-core decoder (v2+v3).
+ * NOT wired into production yet (flag-off groundwork; KiroBackend still uses the
+ * hand-written kiroAgentLoop). Tool-output decoding delegates to the shared
+ * agent-core decoder (v2+v3).
+ *
+ * Residual production concerns (queue drain, prompt() rejection, watchdog,
+ * supervisor/recovery) are intentionally out of scope for this PR — see
+ * the flip-gate design; they land with the KiroBackend wiring.
  */
 import { AgentResult, Message, TextBlock, type StopReason as StrandsStopReason } from '@strands-agents/sdk';
 import {
@@ -64,7 +70,7 @@ export const resolveInitTimeoutMs = (): number => parseMsEnv('KIRO_ACP_INITIALIZ
  * NOTE (production-dead as of the main integration): the LIVE setup-phase bound
  * is now {@link awaitSessionOpen} → {@link withTimeout} (labels `initialize` /
  * `session/new` / `session/load`), NOT this helper. `buildInitTimeoutError` /
- * {@link raceWithInitTimeout} are retained ONLY so the
+ * {@link raceWithInitTimeout} are retained ONLY so the the earlier
  * `kiro-acp-init-timeout.test.ts` contract keeps compiling/passing; they are
  * not called on any runtime path. If that test is ever retired, delete both.
  * The equivalent live-wording classifier assertions now live in the same test
@@ -145,6 +151,19 @@ export interface KiroAcpAgentOptions extends KiroAcpProcessOptions {
   /** If provided, use session/load instead of session/new to resume an existing session. */
   sessionId?: string;
 }
+
+/**
+ * Build the ACP `_meta` payload that selects the active kiro-cli agent profile
+ * for a session (always-deployed profile). When `agentName` is set we send `_meta.kiro.modeId` so
+ * KAS activates that profile (which carries `includeMcpJson: true`, exposing the
+ * remote-swe MCP tools). When it is absent (e.g. the the real-.kiro safeguard real-`.kiro` bail in
+ * deployKiroWorkspaceFiles returned undefined) we return `undefined` so NO
+ * modeId is sent and the session degrades to today's default behaviour instead
+ * of referencing a non-existent profile. Exported + pure so both the
+ * session/new and session/load wiring can be unit-tested for real.
+ */
+export const buildKiroSessionMeta = (agentName: string | undefined): { kiro: { modeId: string } } | undefined =>
+  agentName ? { kiro: { modeId: agentName } } : undefined;
 
 /**
  * Common interface satisfied by both ActiveSession (session/new) and ManualSession
@@ -311,6 +330,43 @@ function extractToolOutput(update: ToolCallUpdate): string | undefined {
 }
 
 /**
+ * Extract the context-usage percentage from a `session_info_update`'s `_meta`.
+ *
+ * KAS 2.19.2 builds this update via `buildSessionInfoUpdate`, which nests the
+ * kiro-specific payload under `_meta.kiro` in two overlapping shapes:
+ *   - `_meta.kiro.usagePercentage` (spread from the discriminated update object
+ *     `{ kind: 'context_usage', usagePercentage }`), and
+ *   - `_meta.kiro.contextUsage.usagePercentage` (the legacy field).
+ * The `kind === 'context_usage'` guard (when a kind is present) gates BOTH
+ * shapes; we read `usagePercentage` first and fall back to the legacy
+ * `contextUsage.usagePercentage`, so the value survives either shape. Returns
+ * `undefined` when no usable numeric percentage is present. Pure + exported for
+ * direct unit testing.
+ */
+export function extractContextUsagePercentage(meta: unknown): number | undefined {
+  if (!meta || typeof meta !== 'object') return undefined;
+  const kiro = (meta as { kiro?: unknown }).kiro;
+  if (!kiro || typeof kiro !== 'object') return undefined;
+  const k = kiro as { kind?: unknown; usagePercentage?: unknown; contextUsage?: unknown };
+  // Both shapes are only meaningful for a context_usage update. When `kind` is
+  // present it must be 'context_usage'; when absent (defensive) we still accept
+  // a numeric percentage. The kind guard applies to BOTH the primary and the
+  // legacy fallback so a non-context_usage update can never leak a percentage.
+  if (k.kind !== undefined && k.kind !== 'context_usage') return undefined;
+  // Primary: the spread `context_usage` update object's `usagePercentage`.
+  if (typeof k.usagePercentage === 'number' && Number.isFinite(k.usagePercentage)) {
+    return k.usagePercentage;
+  }
+  // Legacy fallback: `_meta.kiro.contextUsage.usagePercentage`.
+  const legacy = k.contextUsage;
+  if (legacy && typeof legacy === 'object') {
+    const p = (legacy as { usagePercentage?: unknown }).usagePercentage;
+    if (typeof p === 'number' && Number.isFinite(p)) return p;
+  }
+  return undefined;
+}
+
+/**
  * At most one non-lethal cancel-probe recovery per `stream()` call. If the
  * idle watchdog fires again after a recovery re-prompt, the subprocess is
  * treated as a confirmed wedge (surfaced as the idle-timeout error) so the
@@ -334,7 +390,7 @@ export const kiroCancelAckTimeoutMs = (): number => parseMsEnv('KIRO_ACP_CANCEL_
  * `session/new` keep their historical defaults but become tunable.
  * `0` disables a given timeout.
  */
-// Delegates to resolveInitTimeoutMs so the KIRO_ACP_INITIALIZE_TIMEOUT_MS
+// Delegates to the earlier's resolveInitTimeoutMs so the KIRO_ACP_INITIALIZE_TIMEOUT_MS
 // env has a SINGLE source of truth after the main integration (both read the
 // same legacy-compatible name + 120s default).
 export const kiroInitializeTimeoutMs = (): number => resolveInitTimeoutMs();
@@ -415,8 +471,8 @@ export async function withTimeout<T>(p: Promise<T>, timeoutMs: number, label: st
       // The message MUST carry a kiro-specific marker so the terminal
       // start-phase failure is collapsed to the canonical UX phrase by
       // `isKnownKiroInternalError` (its `hasKiroMarker` gate) instead of leaking
-      // the raw handshake error to Slack/webapp — the regression
-      // `buildInitTimeoutError` guarded against. `(kiro-cli)` satisfies
+      // the raw handshake error to Slack/webapp — the regression the main
+      // the earlier `buildInitTimeoutError` guarded against. `(kiro-cli)` satisfies
       // the `kiro-cli` marker, and `timed out` keeps `isPromptTimeoutOrIdleError`
       // (forward defence on the prompt-phase retry path) true.
       throw new Error(`Kiro ACP ${label} (kiro-cli) timed out after ${Math.round(timeoutMs / 1000)}s`);
@@ -459,14 +515,14 @@ export async function settleWithin<T>(p: Promise<T>, timeoutMs: number): Promise
 
 /**
  * Whether the non-lethal cancel probe is enabled (default ON). Set
- * `KIRO_ACP_CANCEL_PROBE=off` to fall back to the legacy behaviour where an
+ * `KIRO_ACP_CANCEL_PROBE=off` to fall back to the pre-probe behaviour where an
  * idle watchdog fire immediately surfaces as a (lethal) idle-timeout error.
  */
 export const kiroCancelProbeEnabled = (): boolean => parseBoolEnvDefaultOn('KIRO_ACP_CANCEL_PROBE');
 
 /**
  * Pure interpretation of the first message observed during the cancel probe
- * window. Three outcomes:
+ * window (corrected cancel-window semantics). Three outcomes:
  *   - `alive-cancelled`: a `stop` with stopReason `cancelled` — kiro-cli acked
  *     our `session/cancel`, so the subprocess is alive and the in-flight prompt
  *     was aborted. The caller re-prompts the SAME session (with a reset).
@@ -549,7 +605,7 @@ export class KiroAcpAgent {
   readonly name?: string;
   readonly description?: string;
 
-  /** Wall-clock ms at construction — used by the agent pool for max-age recycling. */
+  /** Wall-clock ms at construction — used by the reuse pool for max-age recycling. */
   readonly createdAt: number = Date.now();
 
   private readonly options: KiroAcpAgentOptions;
@@ -573,7 +629,7 @@ export class KiroAcpAgent {
   /**
    * Whether this agent's subprocess is still alive and usable across turns
    * (process reuse). False once disposed, before start, or after the
-   * kiro-cli subprocess has exited. The agent pool consults this before handing a
+   * kiro-cli subprocess has exited. The reuse pool consults this before handing a
    * cached agent to a new turn so a dead process is never reused.
    */
   isAlive(): boolean {
@@ -596,7 +652,13 @@ export class KiroAcpAgent {
   private ensureStarted(): Promise<void> {
     if (this.ready) return this.ready;
     this.ready = (async () => {
-      const handle = spawnKiroAcpProcess(this.options);
+      // pass the MCP server names so the transport can set
+      // ASBX_KIRO_MANDATORY_MCPS and KAS actually exposes their tools to the
+      // model (default sessions otherwise filter all MCP tools out).
+      const handle = spawnKiroAcpProcess({
+        ...this.options,
+        mcpServerNames: (this.options.mcpServers ?? []).map((s) => s.name).filter(Boolean),
+      });
       this.handle = handle;
       const stream = ndJsonStream(handle.writable, handle.readable);
 
@@ -640,20 +702,32 @@ export class KiroAcpAgent {
           this.ctx = ctx;
           const sessionCwd = this.options.cwd ?? `${process.env.HOME || '/tmp'}/.remote-swe-workspace`;
           const mcpServers = this.options.mcpServers ?? [];
+          // select the deployed worker agent profile via _meta.kiro.modeId.
+          // Without an active profile the session is a default vibe session whose
+          // tool policy filters out MCP tools (includeMcpJson=false), so the
+          // remote-swe MCP tools never reach the model. The profile (deployed by
+          // deployKiroWorkspaceFiles) declares includeMcpJson:true. Only send it
+          // when we actually have an agent name — otherwise fall back to today's
+          // behaviour (no modeId) so a bailed/absent profile degrades safely.
+          const kiroMeta = buildKiroSessionMeta(this.options.agentName);
           console.log(
             `[kiro-acp-agent] ${this.options.sessionId ? 'loadSession' : 'buildSession'} cwd=${sessionCwd} mcpServers.length=${mcpServers.length}` +
-              (mcpServers.length > 0 ? ` names=${JSON.stringify(mcpServers.map((s) => s.name))}` : '')
+              (mcpServers.length > 0 ? ` names=${JSON.stringify(mcpServers.map((s) => s.name))}` : '') +
+              ` modeId=${this.options.agentName ?? '(none)'}`
           );
 
           if (this.options.sessionId) {
             // Resume path: session/load with synthesized session files.
             // c5: bound the load (MCP re-registration can be slow; default 120s).
+            // send _meta.kiro.modeId so session/load re-applies the
+            // deployed worker-agent profile (includeMcpJson=true) on resume.
             await withTimeout(
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               (ctx.request as any)('session/load', {
                 sessionId: this.options.sessionId,
                 cwd: sessionCwd,
                 mcpServers,
+                ...(kiroMeta ? { _meta: kiroMeta } : {}),
               }),
               kiroSessionLoadTimeoutMs(),
               'session/load'
@@ -664,9 +738,13 @@ export class KiroAcpAgent {
             console.log(`[kiro-acp-agent] session loaded: ${this.options.sessionId}`);
           } else {
             // New session path. c5: bound session/new (default 30s).
+            // send _meta.kiro.modeId so session/new selects the deployed
+            // worker-agent profile (includeMcpJson=true) that exposes MCP tools.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             this.session = await withTimeout(
-              ctx.buildSession({ cwd: sessionCwd, mcpServers } as any).start(),
+              ctx
+                .buildSession({ cwd: sessionCwd, mcpServers, ...(kiroMeta ? { _meta: kiroMeta } : {}) } as any)
+                .start(),
               kiroSessionNewTimeoutMs(),
               'session/new'
             );
@@ -678,8 +756,8 @@ export class KiroAcpAgent {
           });
         });
       });
-      // Phase-split init bound (supersedes the single-race raceWithInitTimeout
-      // at this call site; those helpers remain exported + unit-tested below):
+      // Phased setup timeout (supersedes the single-race raceWithInitTimeout at this
+      // call site; the the earlier helpers remain exported + unit-tested below):
       //
       // `opened` only ever RESOLVES (from inside the connectWith
       // callback, after the session is open); it never rejects. A failure in
@@ -692,14 +770,14 @@ export class KiroAcpAgent {
       // session/new default 30s) are the AUTHORITATIVE bounds — their
       // rejections now propagate via `connectionDone`, so they are no longer
       // dead code under the outer bound. The outer `initialize` ceiling
-      // (KIRO_ACP_INITIALIZE_TIMEOUT_MS, the same legacy-compatible env name)
-      // covers the connect + handshake so a stall BEFORE the inner
+      // (KIRO_ACP_INITIALIZE_TIMEOUT_MS, the SAME legacy-compatible env Slice 4
+      // introduced) covers the connect + handshake so a stall BEFORE the inner
       // ops (e.g. the transport never yielding a ctx) still fails fast. It is
       // sized as initializeBound + the largest inner bound so it can never
       // pre-empt (and thus mislabel) an inner phase. The outer-timeout error
       // still carries the `timed out` substring, so it stays classified as a
-      // retryable init/idle error exactly like buildInitTimeoutError
-      // (the retry-ladder classification contract is preserved).
+      // retryable init/idle error exactly like Slice 4's buildInitTimeoutError
+      // (timeout→retry join contract preserved).
       await awaitSessionOpen(
         opened,
         this.connectionDone,
@@ -815,7 +893,7 @@ export class KiroAcpAgent {
           watchdog.toolProbe.then(() => ({ tag: 'toolprobe' as const })),
         ]);
 
-        // ---- Tool-liveness probe (fires WHILE a tool is in-flight) ----------
+        // ---- Tool-liveness probe (fires WHILE a tool is in-flight) -------
         // The idle watchdog defers while tools are in-flight, so its
         // probe never runs with expectToolChild=true and DEAD was unreachable.
         // This separate probe DOES fire during tool execution, letting the
@@ -824,7 +902,7 @@ export class KiroAcpAgent {
         // waiting). Does NOT touch pendingNext (no message consumed).
         if (raced.tag === 'toolprobe') {
           if (procLivenessEnabled && watchdog.toolsInFlight > 0) {
-            // Completion: measure NON-baseline (tool-spawned) descendants
+            // Tool-in-flight completion: measure NON-baseline (tool-spawned) descendants
             // and run the pure state machine. DEAD only when we OBSERVED a tool
             // child that then vanished — an in-process MCP tool never sets
             // sawToolChild, so it is never falsely killed.
@@ -893,14 +971,14 @@ export class KiroAcpAgent {
           const probe = await this.runCancelProbe(session, cancelAckTimeoutMs, peekNext);
           if (probe.consumed) pendingNext = undefined; // the shared waiter's message was taken
           if (probe.outcome === 'no-ack') {
-            // Confirmed wedge — surface as the idle-timeout error (retry-ladder
+            // Confirmed wedge — surface as the idle-timeout error (retry ladder
             // will dispose + respawn + session/load resume). pendingNext is
             // left intact (not consumed) but the throw tears the turn down.
             throw new Error(watchdog.idleErrorMessage());
           }
 
           if (probe.outcome === 'completed' && probe.stopMessage) {
-            // The prompt turn actually FINISHED during the probe window
+            // the corrected cancel window: the prompt turn actually FINISHED during the probe window
             // (agent was slow, not wedged). Return it as the turn result — do
             // NOT re-prompt (that would re-run a completed turn / double side
             // effects).
@@ -910,15 +988,15 @@ export class KiroAcpAgent {
           }
 
           if (probe.outcome === 'alive-updated' && probe.pending) {
-            // A real update arrived during the probe window. Route it
+            // the alive-updated recovery: a real update arrived during the probe window. Route it
             // through the SAME processing as the normal path (bookkeeping +
-            // marker detection), so e.g. a probe-delivered interruption
+            // interruption-marker detection), so e.g. a probe-delivered interruption
             // marker still ends the turn cleanly.
             //
             // This is NOT a re-prompt, so it does NOT spend the
             // re-prompt budget (cancelProbeRecoveries). The probe cancel we
             // sent stays OUTSTANDING — its ack (a delayed `stop('cancelled')`)
-            // is expected on the normal path and handled by the ack-attribution branch,
+            // is expected on the normal path and handled by the NB-2 branch,
             // which now remains reachable.
             console.warn(
               `[kiro-acp-agent] idle watchdog fired but subprocess is alive ` +
@@ -941,7 +1019,7 @@ export class KiroAcpAgent {
           // alive-cancelled: the in-flight prompt was aborted by our probe
           // cancel and the ack was consumed inside the probe window. Recover by
           // resetting + re-prompting the SAME session — UNLESS the re-prompt
-          // budget is exhausted or the loop vetoes (double-execution guard: the aborted attempt
+          // budget is exhausted or the loop vetoes (the aborted attempt
           // already ran tools, so re-prompting would re-execute side effects;
           // the loop returns false and we surface a wedge → ladder giveup →
           // auto-retrigger).
@@ -1037,8 +1115,8 @@ export class KiroAcpAgent {
    * (updating fullText via `appendText` + the in-flight tool-id set), and if it
    * is the tool-interruption marker, synthesize terminal `failed` results
    * for every dangling tool and report `interrupted: true` so the caller ends
-   * the turn cleanly. Used by BOTH the normal race branch and the
-   * alive-updated recovery branch so neither can skip marker
+   * the turn cleanly. Used by BOTH the normal race branch and the cancel-probe
+   * alive-updated recovery branch so neither can skip interruption marker
    * detection or tool bookkeeping.
    */
   private *processMessageUpdate(
@@ -1080,12 +1158,12 @@ export class KiroAcpAgent {
   }
 
   /**
-   * Alive-cancelled recovery: reset the aborted attempt's partial state and
+   * alive-cancelled recovery: reset the aborted attempt's partial state and
    * re-prompt the SAME live session. Emits a `reset` event so the consumer
    * (promptCompat / the loop fan-out) drops its own accumulation too, then
    * re-issues the prompt. `clearFullText` resets the caller's stream-local text.
    *
-   * NOTE (context-bloat tradeoff): under process reuse the cancelled prompt
+   * NOTE (process-reuse context-bloat tradeoff): under process reuse the cancelled prompt
    * is already in kiro-cli's own session history and this re-prompt adds another
    * user turn. Accepted: cancellations are far rarer than clean turns, recovery
    * is bounded to MAX_CANCEL_PROBE_RECOVERIES per stream, and the alternative
@@ -1153,9 +1231,44 @@ export class KiroAcpAgent {
         break;
       }
       case 'usage_update': {
+        // ACP-standard `usage_update` carrying raw token counts (`used`/`size`);
+        // the usage percentage is derived. NOTE: KAS 2.19.2 does NOT emit this
+        // variant — its only real context-usage delivery path is
+        // `session_info_update` (see below). We keep this case as a defensive,
+        // forward-compatible path (an ACP standard KAS may adopt later) and as a
+        // fallback alongside the deprecated custom `_kiro.dev/metadata`
+        // notification. Recording it here (the single choke point both the
+        // session/new ActiveSession path and the session/load ManualSession path
+        // funnel through) is what would keep `latestUsage` — and thus
+        // promptCompat().contextUsagePercentage — populated on such a KAS.
+        // Guard: only record when `size` is a positive number. A missing / zero /
+        // negative size would derive a meaningless 0% that could otherwise
+        // OVERWRITE a correct value obtained from `session_info_update`, persist,
+        // and surface as a bogus "0%" in the next turn's environment block.
         const used = u.used;
         const size = u.size;
-        out.push({ type: 'usage', used, size, percentage: size > 0 ? (used / size) * 100 : 0 });
+        if (typeof size === 'number' && size > 0) {
+          const percentage = (used / size) * 100;
+          this.latestUsage = { used, size, percentage };
+          out.push({ type: 'usage', used, size, percentage });
+        }
+        break;
+      }
+      case 'session_info_update': {
+        // KAS 2.19.2's ACTUAL context-usage delivery path. It carries the usage
+        // on `session_info_update` via `_meta.kiro` (buildSessionInfoUpdate
+        // spreads the update, so `_meta.kiro` has `{ kind: 'context_usage',
+        // usagePercentage }` plus the legacy `_meta.kiro.contextUsage.usagePercentage`).
+        // Here the value is already a percentage, so `used`/`size` are
+        // synthesized as pct/100.
+        const usagePercentage = extractContextUsagePercentage(u._meta);
+        if (usagePercentage !== undefined) {
+          // A session_info_update is liveness evidence (kiro-cli is actively
+          // reporting), so pet the watchdog like the other real-progress events.
+          watchdog.onEvent();
+          this.latestUsage = { used: usagePercentage, size: 100, percentage: usagePercentage };
+          out.push({ type: 'usage', used: usagePercentage, size: 100, percentage: usagePercentage });
+        }
         break;
       }
       default:
@@ -1165,8 +1278,8 @@ export class KiroAcpAgent {
   }
 
   /**
-   * Cancel probe: send `session/cancel` and wait a bounded time for kiro-cli
-   * to prove it is alive. Outcomes: `alive-cancelled` (cancel acked),
+   * cancel probe: send `session/cancel` and wait a bounded time for kiro-cli
+   * to prove it is alive. Outcomes (the corrected cancel window): `alive-cancelled` (cancel acked),
    * `completed` (turn actually finished during the window), `alive-updated`
    * (real progress arrived), `no-ack` (confirmed wedge).
    *

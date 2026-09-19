@@ -42,6 +42,7 @@ vi.mock('@aws-sdk/lib-dynamodb', async (importOriginal) => {
 });
 
 import {
+  getLatestTriggerMessageSK,
   getConversationHistory,
   getLatestMessageSK,
   getRecentMessages,
@@ -421,6 +422,57 @@ describe('getLatestMessageSK + saveConversationHistory ensureAfterSK', () => {
   test('getLatestMessageSK is undefined when Items is absent', async () => {
     mockSend.mockResolvedValueOnce({});
     expect(await getLatestMessageSK('worker-1')).toBeUndefined();
+  });
+
+  // getLatestTriggerMessageSK backs the first-turn dedupe guard's
+  // trigger-identity comparison. It MUST issue a strongly-consistent read, or
+  // an eventually-consistent stale snapshot that omits a just-arrived NEW
+  // trigger (M2) would make the guard see only the running trigger (M1),
+  // match, and SKIP — swallowing M2's cancel+restart. This pins ConsistentRead
+  // (and Limit) on the exact query the production code runs.
+  test('getLatestTriggerMessageSK issues a ConsistentRead (strongly-consistent) query', async () => {
+    mockPaginateQuery.mockReturnValueOnce({
+      async *[Symbol.asyncIterator]() {
+        yield { Items: [{ SK: '000000000000200', messageType: 'userMessage' }] };
+      },
+    });
+
+    const sk = await getLatestTriggerMessageSK('worker-1');
+    expect(sk).toBe('000000000000200');
+
+    expect(mockPaginateQuery).toHaveBeenCalledTimes(1);
+    const queryConfig = mockPaginateQuery.mock.calls[0][1] as any;
+    expect(queryConfig.ConsistentRead).toBe(true);
+    expect(queryConfig.Limit).toBe(100);
+    expect(queryConfig.ScanIndexForward).toBe(false);
+    expect(queryConfig.KeyConditionExpression).toBe('PK = :pk');
+    expect(queryConfig.ExpressionAttributeValues[':pk']).toBe('message-worker-1');
+  });
+
+  test('getLatestTriggerMessageSK skips turn-internal rows and returns the newest trigger SK', async () => {
+    // Newest-first: a toolUse row precedes the real trigger; it must be skipped.
+    mockPaginateQuery.mockReturnValueOnce({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          Items: [
+            { SK: '000000000000300', messageType: 'toolResult' },
+            { SK: '000000000000250', messageType: 'toolUse' },
+            { SK: '000000000000200', messageType: 'userMessage' },
+            { SK: '000000000000100', messageType: 'userMessage' },
+          ],
+        };
+      },
+    });
+    expect(await getLatestTriggerMessageSK('worker-1')).toBe('000000000000200');
+  });
+
+  test('getLatestTriggerMessageSK returns undefined when the session has no trigger row', async () => {
+    mockPaginateQuery.mockReturnValueOnce({
+      async *[Symbol.asyncIterator]() {
+        yield { Items: [{ SK: '000000000000300', messageType: 'toolResult' }] };
+      },
+    });
+    expect(await getLatestTriggerMessageSK('worker-1')).toBeUndefined();
   });
 
   test('ensureAfterSK clamps the final SK strictly after a later intra-turn SK', async () => {

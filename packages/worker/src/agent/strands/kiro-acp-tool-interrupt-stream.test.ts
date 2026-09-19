@@ -1,5 +1,5 @@
 /**
- * Tool-interruption integration: drive the REAL KiroAcpAgent.stream() generator (not a
+ * Integration: drive the REAL KiroAcpAgent.stream() generator (not a
  * re-implementation) through a fake ManualSession + ctx, proving the
  * tool-interruption marker wiring: the dangling toolUse gets a synthetic
  * failed result, the marker text stays visible, and the turn ends cleanly.

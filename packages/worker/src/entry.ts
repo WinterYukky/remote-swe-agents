@@ -10,6 +10,7 @@ import {
   saveConversationHistory,
   updateInstanceStatus,
   workerEventSchema,
+  getLatestTriggerMessageSK,
 } from '@remote-swe-agents/agent-core/lib';
 import { updateAgentStatusWithEvent } from './common/status';
 import { refreshSession } from './common/refresh-session';
@@ -51,8 +52,45 @@ Amplify.configure(
   }
 );
 
+/** One tracked converse turn. `triggerSK` is the SK of the USER-INPUT message
+ *  this turn was started to process (see getLatestTriggerMessageSK) — the
+ *  stable identity used to de-duplicate concurrent starts for the same
+ *  message. */
+type TrackedSession = {
+  promise: Promise<void>;
+  isFinished: boolean;
+  cancellationToken: CancellationToken;
+  triggerSK?: string;
+};
+
+/**
+ * Pure decision for a new turn-start request (first-turn dedupe): given the sessions
+ * currently tracked and the SK of the latest trigger message the incoming
+ * start would process, decide whether to skip the start entirely.
+ *
+ * Returns true (SKIP, no-op) ONLY when a still-running session is already
+ * processing the SAME trigger SK — this collapses the boot-`startResume` vs
+ * unicast-`onMessageReceived` race that otherwise cancels an in-flight turn
+ * mid-tool and re-dispatches the same tool. Returns false (PROCEED with the
+ * normal cancel+restart) when:
+ *   - there is no running session (nothing to collide with), OR
+ *   - a running session is processing a DIFFERENT trigger SK — i.e. a genuinely
+ *     new user message arrived mid-turn, which MUST still cancel+restart
+ *     (the interrupt-flow behaviour the #327 E2E depends on), OR
+ *   - the incoming trigger SK is undefined (cannot prove identity → never skip).
+ *
+ * Exported so the tracker AND its unit test run this exact code.
+ */
+export function shouldSkipDuplicateStart(
+  sessions: Pick<TrackedSession, 'isFinished' | 'triggerSK'>[],
+  incomingTriggerSK: string | undefined
+): boolean {
+  if (incomingTriggerSK == undefined) return false;
+  return sessions.some((s) => !s.isFinished && s.triggerSK === incomingTriggerSK);
+}
+
 class ConverseSessionTracker {
-  private sessions: { promise: Promise<void>; isFinished: boolean; cancellationToken: CancellationToken }[] = [];
+  private sessions: TrackedSession[] = [];
   private operationQueue: Promise<void> = Promise.resolve();
   public constructor(private readonly workerId: string) {}
 
@@ -64,16 +102,47 @@ class ConverseSessionTracker {
 
   public startOnMessageReceived() {
     this.enqueue(async () => {
+      // First-turn dedupe: resolve the trigger identity BEFORE cancelling. If a turn
+      // is already processing this exact trigger message, skip entirely
+      // (no cancel, no restart) so we do not tear down an in-flight turn and
+      // re-dispatch the same tool (boot-startResume vs unicast race). A new
+      // trigger SK still falls through to cancel+restart.
+      const triggerSK = await this.resolveTriggerSK();
+      if (shouldSkipDuplicateStart(this.sessions, triggerSK)) {
+        console.log(
+          `[ConverseSessionTracker] Skipping duplicate onMessageReceived start for trigger SK=${triggerSK} (already in progress).`
+        );
+        return;
+      }
       await this.cancelCurrentSessions();
-      this._startOnMessageReceived();
+      this._startOnMessageReceived(triggerSK);
     });
   }
 
   public startResume() {
     this.enqueue(async () => {
+      const triggerSK = await this.resolveTriggerSK();
+      if (shouldSkipDuplicateStart(this.sessions, triggerSK)) {
+        console.log(
+          `[ConverseSessionTracker] Skipping duplicate resume start for trigger SK=${triggerSK} (already in progress).`
+        );
+        return;
+      }
       await this.cancelCurrentSessions();
-      this._startResume();
+      this._startResume(triggerSK);
     });
+  }
+
+  /** Best-effort resolution of the latest trigger message SK; a lookup failure
+   *  returns undefined so the guard proceeds with the normal start (fail-open,
+   *  never skip on error). */
+  private async resolveTriggerSK(): Promise<string | undefined> {
+    try {
+      return await getLatestTriggerMessageSK(this.workerId);
+    } catch (e) {
+      console.warn('[ConverseSessionTracker] failed to resolve latest trigger SK; proceeding without dedupe:', e);
+      return undefined;
+    }
   }
 
   public forceStop(callback?: () => Promise<any>) {
@@ -82,8 +151,13 @@ class ConverseSessionTracker {
     });
   }
 
-  private _startOnMessageReceived() {
-    const session = { promise: Promise.resolve(), isFinished: false, cancellationToken: new CancellationToken() };
+  private _startOnMessageReceived(triggerSK?: string) {
+    const session: TrackedSession = {
+      promise: Promise.resolve(),
+      isFinished: false,
+      cancellationToken: new CancellationToken(),
+      triggerSK,
+    };
     this.sessions.push(session);
     // temporarily pause kill timer when an agent loop is running
     const restartToken = pauseKillTimer();
@@ -117,8 +191,13 @@ class ConverseSessionTracker {
       });
   }
 
-  private _startResume() {
-    const session = { promise: Promise.resolve(), isFinished: false, cancellationToken: new CancellationToken() };
+  private _startResume(triggerSK?: string) {
+    const session: TrackedSession = {
+      promise: Promise.resolve(),
+      isFinished: false,
+      cancellationToken: new CancellationToken(),
+      triggerSK,
+    };
     this.sessions.push(session);
     const restartToken = pauseKillTimer();
     session.promise = resume(this.workerId, session.cancellationToken)

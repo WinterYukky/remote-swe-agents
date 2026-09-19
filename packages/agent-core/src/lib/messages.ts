@@ -12,6 +12,7 @@ import { toolNamesEqual } from '../tool-name-utils';
 import { getWebappSessionUrl } from './webapp-origin';
 import { updateSessionLastMessage } from './sessions';
 import {
+  USER_INPUT_MESSAGE_TYPES,
   MessageItem,
   INTERNAL_ERROR_MESSAGE_TYPE,
   RETRIGGER_GIVEUP_MESSAGE_TYPE,
@@ -223,6 +224,57 @@ export const saveConversationHistory = async (
     })
   );
   return item;
+};
+
+/**
+ * Return the SK of the most recent USER-INPUT (trigger) message —
+ * `userMessage` / `eventTrigger` / `agentMessage` / `errorFeedback` /
+ * `systemRetrigger` / `mermaidFeedback` (see {@link USER_INPUT_MESSAGE_TYPES}).
+ *
+ * This is the stable identity of "the user action that a turn is processing".
+ * Unlike {@link getLatestMessageSK}, it deliberately IGNORES turn-internal rows
+ * (`toolUse` / `toolResult` / `assistant` / `userDeliveryLog` / mirrors), so the
+ * value does NOT drift while a turn runs and writes those rows. The
+ * ConverseSessionTracker uses it to de-duplicate the boot-`startResume` vs
+ * unicast-`onMessageReceived` race: two starts for the SAME latest trigger must
+ * NOT cancel+restart each other, whereas a genuinely NEW trigger (different SK)
+ * still must. Returns undefined when the session has no trigger message yet.
+ *
+ * Newest-first scan that stops at the first trigger row. `communicationLog`
+ * mirror rows share the underlying type but are stored under a different
+ * `messageType`, so they are naturally skipped by the set membership test.
+ *
+ * Uses `ConsistentRead: true`: the dedupe guard compares this value against the
+ * trigger SK of an in-flight turn, so an eventually-consistent stale snapshot
+ * that omits a just-arrived NEW trigger (M2) would make the guard see only the
+ * running trigger (M1), match, and SKIP — swallowing M2's cancel+restart. A
+ * strongly-consistent read guarantees any committed newer trigger is visible.
+ * `Limit: 100` caps each page (a trigger row is normally at or near the newest
+ * rows, so the scan stops well within one page) instead of scanning up to 1MB.
+ */
+export const getLatestTriggerMessageSK = async (workerId: string): Promise<string | undefined> => {
+  const paginator = paginateQuery(
+    { client: ddb },
+    {
+      TableName,
+      KeyConditionExpression: 'PK = :pk',
+      ExpressionAttributeValues: {
+        ':pk': `message-${workerId}`,
+      },
+      ScanIndexForward: false, // newest (largest SK) first
+      ConsistentRead: true,
+      Limit: 100,
+      ProjectionExpression: 'SK, messageType',
+    }
+  );
+  for await (const page of paginator) {
+    for (const item of page.Items ?? []) {
+      if (USER_INPUT_MESSAGE_TYPES.has((item as MessageItem).messageType)) {
+        return (item as MessageItem).SK;
+      }
+    }
+  }
+  return undefined;
 };
 
 /**

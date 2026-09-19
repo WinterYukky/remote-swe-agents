@@ -11,6 +11,8 @@ import {
   hadNewWorkTool,
   MIN_REHASH_LENGTH,
   REHASH_CONTAINMENT_THRESHOLD,
+  REHASH_MIN_LENGTH_RATIO,
+  REHASH_MAX_LENGTH_RATIO,
 } from './self-narration-filter';
 
 // Send-zero internal-monologue leaks, synthesised from live observations.
@@ -107,6 +109,53 @@ describe('isRehashContainment', () => {
     const rehash = 'バックエンドの実装が完了して lint も typecheck も通りました。';
     expect(isRehashContainment(rehash, prior)).toBe(true);
   });
+
+  // FALSE-POSITIVE GUARD: a SHORT reply whose bigrams are almost entirely
+  // present in a MUCH LONGER prior (because it quotes a shared token) must NOT
+  // be treated as a condensed restatement of that prior. The MIN length-ratio
+  // guard rejects it even though containment clears the threshold.
+  test('FALSE-POSITIVE GUARD: short reply quoting a token from a long prior is NOT a rehash', () => {
+    // Re-synthesized from a live incident: a short one-line answer quoting a
+    // repository name that also appeared in an earlier long README delivery
+    // (CJK fixture — the production traffic this guards is Japanese; the raw
+    // incident scored 0.906 containment at a 0.05 length ratio).
+    const candidate = '`aws-samples/remote-swe-agents` です。';
+    const longPrior =
+      'cloneが完了しました（`/root/workspace/remote-swe-agents`）。READMEの先頭10行はこちらです。\n\n' +
+      '```markdown\n# Remote SWE Agents\n\nEnglish | [日本語](README_ja.md)\n\n' +
+      'This is an example implementation of a fully autonomous software development AI agent. ' +
+      'The agent works in its own dedicated development environment (remote-swe-agents), ' +
+      'free from local constraints, and collaborates on the aws-samples/remote-swe-agents repository.\n```\n\n' +
+      '他に見たい部分や、リポジトリで進めたい作業はありますか？';
+    // Containment is high (the reply's bigrams are largely present in the prior)…
+    expect(containmentScore(candidate, longPrior)).toBeGreaterThanOrEqual(REHASH_CONTAINMENT_THRESHOLD);
+    // …but the reply is far too short relative to the prior to be a condensation.
+    expect(isRehashContainment(candidate, longPrior)).toBe(false);
+  });
+
+  // BOUNDARY: the MIN length-ratio guard is inclusive at exactly
+  // REHASH_MIN_LENGTH_RATIO; below the ratio the candidate is delivered.
+  test('BOUNDARY: candidate at the MIN length ratio still fires; below it does not', () => {
+    // Build a prior fully containing the candidate's bigrams (containment = 1),
+    // sized so the candidate lands exactly on the MIN ratio.
+    const candidate = 'abcdefghijklmnopqrst'; // 20 norm chars (== MIN_REHASH_LENGTH)
+    // ratio = cand/prior: 20/66 = 0.303 (>= 0.30 → fires); 20/67 = 0.298 (< 0.30 → not).
+    const priorAt = ('abcdefghijklmnopqrst' + 'u'.repeat(66 - 20)).slice(0, 66);
+    const priorBelow = ('abcdefghijklmnopqrst' + 'u'.repeat(67 - 20)).slice(0, 67);
+    expect(candidate.length / priorAt.length).toBeGreaterThanOrEqual(REHASH_MIN_LENGTH_RATIO);
+    expect(candidate.length / priorBelow.length).toBeLessThan(REHASH_MIN_LENGTH_RATIO);
+    expect(containmentScore(candidate, priorAt)).toBeCloseTo(1, 5);
+    expect(isRehashContainment(candidate, priorAt)).toBe(true); // at ratio → still a rehash
+    expect(isRehashContainment(candidate, priorBelow)).toBe(false); // below ratio → delivered
+  });
+
+  test('the two length-ratio guards bracket the genuine-condensation band', () => {
+    // Documents the calibrated separation the guards enforce:
+    // FP short-quote (~0.05) < MIN (0.30) < genuine condensation (0.51–0.52) < MAX (0.85) < same-length report (~0.96)
+    expect(REHASH_MIN_LENGTH_RATIO).toBeLessThan(0.51);
+    expect(REHASH_MAX_LENGTH_RATIO).toBeGreaterThan(0.52);
+    expect(REHASH_MIN_LENGTH_RATIO).toBeGreaterThan(0.05);
+  });
 });
 
 describe('isRehashOrSelfNarration (A-1 / A-2)', () => {
@@ -140,6 +189,41 @@ describe('isRehashOrSelfNarration (A-1 / A-2)', () => {
     // Neither the symmetric, relaxed-symmetric, nor the containment
     // (length-ratio guard) path fires → genuine new report passes.
     expect(isRehashOrSelfNarration(achievement, [recent(condition)])).toBe(false);
+  });
+
+  // FALSE-POSITIVE GUARD (pipeline): a short new answer that quotes a repo
+  // name mentioned in an earlier long delivery must be DELIVERED, not
+  // suppressed. Whole-pipeline regression test for the MIN length-ratio
+  // guard — it fails if that guard is removed. (CJK fixtures re-synthesized
+  // from a live incident.)
+  test('FALSE-POSITIVE GUARD (pipeline): short reply quoting a token from a long prior delivery is delivered', () => {
+    const shortAnswer = '`aws-samples/remote-swe-agents` です。';
+    const priorShort = '登録されているカスタムエージェントはありません。\n\n新しくエージェントを作成しましょうか？';
+    const longReadmeDelivery =
+      'cloneが完了しました（`/root/workspace/remote-swe-agents`）。READMEの先頭10行はこちらです。\n\n' +
+      '```markdown\n# Remote SWE Agents\n\nEnglish | [日本語](README_ja.md)\n\n' +
+      'This is an example implementation of a fully autonomous software development AI agent. ' +
+      'The agent works in its own dedicated development environment (remote-swe-agents), ' +
+      'free from local constraints, and collaborates on the aws-samples/remote-swe-agents repository.\n```\n\n' +
+      '他に見たい部分や、リポジトリで進めたい作業はありますか？';
+    expect(isRehashOrSelfNarration(shortAnswer, [recent(priorShort, 1), recent(longReadmeDelivery, 2)])).toBe(false);
+  });
+
+  // Guard that the MIN-ratio fix did NOT weaken the OTHER two sub-signals: a
+  // genuine same-length self-narration (relaxed-symmetric path) and a genuine
+  // condensed rehash (containment path, ratio in-band) must still be
+  // suppressed.
+  test('REGRESSION GUARD: relaxed-symmetric self-narration still suppressed after the min-ratio fix', () => {
+    const sent = '進捗です: バックエンド実装が完了して lint/typecheck 通過、残りは E2E テストだけです。';
+    const narration = 'バックエンド実装が完了して lint/typecheck 通過、残りは E2E テストだけと送りました。';
+    expect(isRehashOrSelfNarration(narration, [recent(sent)])).toBe(true);
+  });
+
+  test('REGRESSION GUARD: a genuine condensed rehash (ratio in-band) is still suppressed after the min-ratio fix', () => {
+    const prior =
+      'バックエンドの実装が完了して、lint も typecheck も通りました。残りは E2E テストだけなので、それが緑になったら PR を上げます。';
+    const rehash = 'バックエンドの実装が完了して lint も typecheck も通りました。';
+    expect(isRehashOrSelfNarration(rehash, [recent(prior)])).toBe(true);
   });
 });
 

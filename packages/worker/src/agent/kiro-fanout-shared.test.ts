@@ -3,7 +3,7 @@
  * =========================================================
  * These pure helpers are used by BOTH the legacy `kiroAgentLoop` and the
  * ACP-SDK `kiroAcpSdkAgentLoop`. Testing them here locks the 5 fan-out
- * behaviours against drift between the loop and the shared helpers:
+ * behaviours against drift between the two loops for the PR2→PR5 window:
  *   - normalizeKiroToolName (behaviour 2: MCP namespace / status prefix strip)
  *   - processToolCallDiscardBoundary (behaviour 1: tool-boundary text discard)
  *   - resolveToolResultOutput (never-empty + truncation guard, shared output)
@@ -71,7 +71,7 @@ describe('isTerminalToolStatus (shared terminal-status guard)', () => {
   });
 
   it('v3 update sequence (in_progress×2 → completed) yields exactly ONE terminal update', () => {
-    // v3 emits three tool_call_update events for one tool.
+    // v3 emits three tool_call_update events for one tool (observed triple-update sequence).
     // Only the final `completed` must pass the guard; the two in_progress must
     // be dropped so the loop persists the real output once, not a placeholder.
     const v3Sequence = ['in_progress', 'in_progress', 'completed'];

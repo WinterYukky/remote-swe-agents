@@ -1,5 +1,5 @@
 /**
- * Init/handshake timeout for the live kiro-cli SDK path.
+ * Slice 4: init/handshake timeout for the live kiro-cli SDK path.
  *
  * These tests drive the REAL production helpers used by
  * `KiroAcpAgent.ensureStarted()` (`raceWithInitTimeout`, `buildInitTimeoutError`,
@@ -41,7 +41,7 @@ describe('resolveInitTimeoutMs (env-driven, legacy-compatible)', () => {
   });
 });
 
-describe('buildInitTimeoutError wording is recognised by BOTH classifiers (retry join contract)', () => {
+describe('buildInitTimeoutError wording is recognised by BOTH classifiers (timeout→retry join contract)', () => {
   const err = buildInitTimeoutError(120_000);
 
   it('is classified as a timeout/idle error → retry-phase start() recovers', () => {
@@ -73,7 +73,7 @@ describe('raceWithInitTimeout — real race against a hanging handshake', () => 
     await assertion;
   });
 
-  it('the rejection it throws is retryable per the real timeout matcher (timeout → retry join)', async () => {
+  it('the rejection it throws is retryable per the real retry matcher (timeout → retry join)', async () => {
     vi.useFakeTimers();
     const hangingOpen = new Promise<void>(() => {});
     const raced = raceWithInitTimeout(hangingOpen, 1000);
@@ -106,7 +106,7 @@ describe('raceWithInitTimeout — real race against a hanging handshake', () => 
 
 /**
  * Regression: the LIVE setup-phase bound is `withTimeout` (labels
- * `initialize` / `session/load` / `session/new`), NOT the retained
+ * `initialize` / `session/load` / `session/new`), NOT the earlier
  * `raceWithInitTimeout`/`buildInitTimeoutError` (now production-dead). The
  * previous tests only asserted the DEAD helper's wording, so when the merge
  * re-wired the live path onto `withTimeout` — whose message did NOT carry a

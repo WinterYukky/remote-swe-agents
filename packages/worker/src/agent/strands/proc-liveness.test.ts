@@ -76,7 +76,7 @@ describe('classifyLiveness', () => {
     ).toBe('ALIVE_ACTIVE');
   });
 
-  it('ALIVE_ACTIVE when descendant CPU advances beyond the tick threshold between samples', () => {
+  it('ALIVE_ACTIVE when descendant CPU advances beyond the CPU-advance threshold between samples', () => {
     expect(
       classifyLiveness([stat(1, 'S', 10)], [stat(1, 'S', 15)], { expectToolChild: false, rootReadable: true })
     ).toBe('ALIVE_ACTIVE');
@@ -174,7 +174,7 @@ describe('kiroProcLivenessEnabled', () => {
   });
 });
 
-describe('decideToolProbeVerdict (tool-liveness state machine)', () => {
+describe('tool-in-flight probe completion: decideToolProbeVerdict (tool-liveness state machine)', () => {
   const m = (o: Partial<NewDescendantMeasurement>): NewDescendantMeasurement => ({
     present: false,
     active: false,
@@ -265,7 +265,7 @@ describe('decideToolProbeVerdict (tool-liveness state machine)', () => {
   });
 });
 
-describe('measureNewDescendantActivity (baseline exclusion)', () => {
+describe('tool-in-flight probe completion: measureNewDescendantActivity (baseline exclusion)', () => {
   const noSleep = () => Promise.resolve();
 
   it('excludes baseline (resident MCP) pids → not present when only baseline children exist', async () => {
@@ -307,7 +307,7 @@ describe('measureNewDescendantActivity (baseline exclusion)', () => {
   });
 });
 
-describe('captureBaselinePids', () => {
+describe('tool-in-flight probe completion: captureBaselinePids', () => {
   it('captures current descendants as the baseline set', () => {
     const lines: Record<number, string> = {
       67: statLine(67, 'kiro-cli', 'S', 1, 0, 0),

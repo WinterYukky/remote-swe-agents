@@ -756,6 +756,20 @@ export interface SynthesizeKiroSessionOptions {
    */
   modelId?: string;
   /**
+   * Agent mode (kiro-cli custom-agent profile id) to record in the v3
+   * `session.json` metadata `agentMode` field. Defaults to `'vibe'`.
+   *
+   * Load-bearing for the worker always resumes via `session/load`, and
+   * KAS's `hydrateSessionForLoad` resolves the active agent profile from the
+   * PERSISTED `metadata.agentMode`, IGNORING the request's `_meta.kiro.modeId`
+   * when a persisted record exists. So unless the synthesised session.json
+   * records the profile id here, the base worker agent profile (which owns the
+   * remote-swe MCP server + `includeMcpJson`) is never applied and MCP tools
+   * never reach the model. Pass the deployed `kiroAgentName` so the profile is
+   * honoured on every resume turn; omit for the default 'vibe' session.
+   */
+  agentMode?: string;
+  /**
    * Injection point for materialising image S3 keys into local filesystem
    * paths. Defaults to the agent-core `materializeImageBlock` which fetches
    * from S3, resizes to ≤1568px, and writes a JPEG preview. Tests inject a
@@ -1090,7 +1104,10 @@ export const synthesizeKiroSessionFilesV3 = async (
     dataModelVersion: 1,
     id: options.sessionId,
     title,
-    agentMode: 'vibe',
+    // record the custom-agent profile so KAS's session/load applies it
+    // (load reads persisted agentMode and ignores the request modeId). Falls
+    // back to 'vibe' when no profile is deployed.
+    agentMode: options.agentMode ?? 'vibe',
     workspacePaths: [options.cwd],
     createdAt,
     lastModifiedAt: new Date().toISOString(),
@@ -1136,6 +1153,41 @@ export const readKiroV3SessionModelId = (sessionId: string, cwd: string, home?: 
     return parsed.modelId;
   } catch {
     return undefined;
+  }
+};
+
+/**
+ * Idempotently patch the `agentMode` recorded in an EXISTING v3 `session.json`.
+ *
+ * `synthesizeKiroSessionFilesV3` only runs when the session files are
+ * absent (see the `kiroV3SessionFilesExist` guard in kiro-acp-sdk-agent-loop).
+ * On a resume turn where the files already exist — e.g. a container that
+ * persisted them from a previous turn, or a session first synthesised by an
+ * older build that hardcoded `agentMode:'vibe'` — the synthesiser is skipped,
+ * so the stale `vibe` mode would be read by KAS's `session/load` and the
+ * custom-agent profile (remote-swe MCP owner) would never be applied. This
+ * helper updates the persisted `agentMode` in place so the profile is honoured
+ * on those turns too.
+ *
+ * Best-effort: returns `false` (and never throws) when the file is missing,
+ * unparsable, or already at the desired mode; returns `true` when it rewrote it.
+ */
+export const patchKiroV3SessionAgentMode = (
+  sessionId: string,
+  cwd: string,
+  agentMode: string,
+  home?: string
+): boolean => {
+  try {
+    const jsonPath = path.join(kiroV3SessionDir(sessionId, cwd, home), 'session.json');
+    const parsed = JSON.parse(fs.readFileSync(jsonPath, 'utf8')) as Record<string, unknown>;
+    if (parsed.agentMode === agentMode) return false;
+    parsed.agentMode = agentMode;
+    parsed.lastModifiedAt = new Date().toISOString();
+    fs.writeFileSync(jsonPath, JSON.stringify(parsed, null, 2), 'utf8');
+    return true;
+  } catch {
+    return false;
   }
 };
 

@@ -42,14 +42,15 @@ describe('mcp-server/bin stdio hygiene', () => {
         },
       }),
       JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-      // `think` is side-effect-free but several helpers scattered across
-      // agent-core touch console.log in production; this test only needs
+      // `think` is side-effect-free but kiroAgentLoop / sink helpers
+      // scattered across agent-core touch console.log in production. The
+      // real regression is observed through Kiro; this test only needs
       // to prove the stream stays clean.
       JSON.stringify({
         jsonrpc: '2.0',
         id: 2,
         method: 'tools/call',
-        params: { name: 'think', arguments: { thought: 'hello' } },
+        params: { name: 'Think', arguments: { thought: 'hello' } },
       }),
     ]);
 

@@ -1,7 +1,7 @@
 /**
  * Stale-pid recovery tests for the SDK loop (Option C: legacy parity wiring).
  *
- * The v3 engine is lock-free, so this path is normally
+ * The v3 engine is lock-free (legacy L2300-2304), so this path is normally
  * dormant. These tests verify the detection regex and kill-sequence wiring
  * via synthetic errors — ensuring correct trigger/non-trigger behaviour.
  */

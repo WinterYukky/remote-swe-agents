@@ -56,6 +56,7 @@
     "@aws-sdk/client-lambda-microvms": "^3.1102.0",
     "@aws-sdk/client-s3": "^3.1068.0",
     "@aws-sdk/client-scheduler": "^3.1019.0",
+    "@aws-sdk/client-secrets-manager": "^3.1102.0",
     "@aws-sdk/client-ssm": "^3.817.0",
     "@aws-sdk/client-sts": "^3.758.0",
     "@aws-sdk/credential-providers": "^3.750.0",
@@ -63,12 +64,12 @@
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@octokit/rest": "^22.0.0",
     "@slack/bolt": "^4.2.0",
+    "js-yaml": "^4.1.1",
+    "jsdom": "^26.1.0",
+    "mermaid": "^11.4.0",
     "p-retry": "^6.2.1",
     "sharp": "^0.33.5",
     "web-push": "^3.6.7",
-    "jsdom": "^26.1.0",
-    "mermaid": "^11.4.0",
-    "js-yaml": "^4.1.1",
     "yauzl-promise": "^4.0.0"
   },
   "devDependencies": {

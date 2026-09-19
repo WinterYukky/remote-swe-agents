@@ -84,7 +84,7 @@ describe('mcp-server streamable-http transport', () => {
     await res.body?.cancel();
   });
 
-  test('does not reject requests even with a wrong bearer (auth disabled)', async () => {
+  test('does not reject requests even with a wrong bearer (auth disabled, mismatch only logged)', async () => {
     // Previously this returned 401. Kept as a regression guard that
     // flipping auth back on is a deliberate change.
     const res = await fetch(server.url, {

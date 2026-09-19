@@ -58,7 +58,7 @@ describe('toStrandsTool', () => {
     expect(t.description).toBe('Echo the input text');
   });
 
-  it('sanitizes tool names with spaces', async () => {
+  it('sanitizes tool names with spaces (C-1 regression)', async () => {
     const t = await toStrandsTool(makeTool({ name: 'Send Message To User', handler: async () => 'sent' }), deps);
     expect(t.name).toBe('Send_Message_To_User');
   });

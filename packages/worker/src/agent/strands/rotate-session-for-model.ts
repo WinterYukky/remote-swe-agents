@@ -1,30 +1,30 @@
 /**
- * rotateSessionForModel — SDK loop version of the legacy rotateKiroSessionForModelSwitch
+ * rotateSessionForModel — SDK loop version of legacy rotateKiroSessionForModelSwitch (L1655-1815)
  * ==============================================================================================
  * Orchestrates mid-session model rotation for the ACP-SDK loop (`kiroAcpSdkAgentLoop`).
  * Extracted as an export so the loop and its tests call the same function
  * (computeSynthPlan / buildKiroAcpArgs pattern — preventing test-replica drift).
  *
- * ## Legacy correspondence table:
+ * ## Legacy correspondence table (kiro-agent-loop.ts L1655-1815):
  *
- * | Legacy step                             | SDK loop equivalent                         |
+ * | Legacy step (line)                      | SDK loop equivalent                         |
  * |-----------------------------------------|---------------------------------------------|
  * | Read liveModel via                      | readKiroV3SessionModelId(effectiveSessionId)|
- * |   readKiroV3SessionModelId              |   (same function)                           |
+ * |   readKiroV3SessionModelId (L2866)      |   (same function)                           |
  * | Compare liveModel vs desiredModel       | Same comparison (undefined = auto)          |
- * |   (applyDesiredModel gate)              |                                             |
- * | Generate newSessionId                   | deps.generateSessionId()                    |
- * | computeItemsToSynth                     | computeSynthPlan (shared export)            |
- * | synthesize v3 files                     | deps.synthesize(...)                        |
- * | client.loadSession                      | N/A — SDK loop passes sessionId to agent    |
+ * |   (L2869 + applyDesiredModel gate)      |                                             |
+ * | Generate newSessionId (L1726)           | deps.generateSessionId()                    |
+ * | computeItemsToSynth (L1729)            | computeSynthPlan (shared export)            |
+ * | synthesize v3 files (L1730-1740)       | deps.synthesize(...)                        |
+ * | client.loadSession (L1742)             | N/A — SDK loop passes sessionId to agent    |
  * |                                         |   constructor; start() does the load        |
- * | Fabrication guard: createdAt            | modelId round-trip verification via         |
- * |                                         |   deps.readModelId after synthesis          |
- * | restorePreviousSession                  | N/A — SDK creates agent per-turn; on        |
+ * | Fabrication guard: createdAt (L1750-80) | modelId round-trip verification via  |
+ * |                                         |   deps.readModelId after synthesis   |
+ * | restorePreviousSession (L1677-1716)    | N/A — SDK creates agent per-turn; on        |
  * |                                         |   failure just keep old effectiveSessionId  |
- * | persistSessionId to DDB                 | deps.persistSessionId(workerId, newId)      |
- * | state.currentModel update               | Return newSessionId for caller to use       |
- * | User notification on failure            | Caller issues sendSystemMessage w/ dedup    |
+ * | persistSessionId to DDB (L1805)        | deps.persistSessionId(workerId, newId)      |
+ * | state.currentModel update (L1803)      | Return newSessionId for caller to use       |
+ * | User notification on failure (L2907-18)| Caller issues sendSystemMessage w/ dedup    |
  *
  * ## Key design difference from legacy:
  * The legacy function operates on a live persistent client (loadSession moves
@@ -110,10 +110,10 @@ export const rotateSessionForModel = async (
   const { workerId, currentSessionId, desiredModel, history, consumedTailCount, cwd } = input;
 
   // Step 1: Read the live model from the current session's session.json
-  // (legacy readKiroV3SessionModelId).
+  // (legacy L2866: readKiroV3SessionModelId).
   const liveModel = deps.sessionFilesExist(currentSessionId, cwd) ? deps.readModelId(currentSessionId, cwd) : undefined;
 
-  // Step 2: Compare live model vs desired (legacy applyDesiredModel gate).
+  // Step 2: Compare live model vs desired (legacy applyDesiredModel gate L2869).
   // Both undefined means "auto = auto" — no rotation needed.
   if (liveModel === desiredModel) {
     return { ok: true, newSessionId: currentSessionId, persisted: true };
@@ -124,15 +124,15 @@ export const rotateSessionForModel = async (
       `rotating session ${currentSessionId}`
   );
 
-  // Step 3: Validate model ID (legacy defence-in-depth).
+  // Step 3: Validate model ID (legacy L1719-1721 defence-in-depth).
   if (desiredModel !== undefined && !/^[a-zA-Z0-9._-]+$/.test(desiredModel)) {
     return { ok: false, reason: `Refused to switch: invalid model id "${desiredModel}"` };
   }
 
-  // Step 4: Generate new session ID.
+  // Step 4: Generate new session ID (legacy L1726).
   const newSessionId = deps.generateSessionId();
 
-  // Step 5: Synthesize v3 session files with new modelId.
+  // Step 5: Synthesize v3 session files with new modelId (legacy L1729-1740).
   const { itemsToSynth, rawCount, replayTrimCount } = computeSynthPlan(history, consumedTailCount);
   let synthEventCount: number;
   try {
@@ -153,7 +153,7 @@ export const rotateSessionForModel = async (
     return { ok: false, reason: msg };
   }
 
-  // Step 6: Fabrication guard.
+  // Step 6: Fabrication guard (legacy L1750-1780).
   // For the SDK loop, we verify by reading back session.json immediately after
   // writing it (not via session/load _meta as in legacy, since the agent hasn't
   // started yet). If the file doesn't exist or createdAt doesn't match, the
@@ -182,7 +182,7 @@ export const rotateSessionForModel = async (
     }
   }
 
-  // Step 7: Persist the new sessionId to DDB.
+  // Step 7: Persist the new sessionId to DDB (legacy L1805).
   try {
     await deps.persistSessionId(workerId, newSessionId);
   } catch (persistErr) {

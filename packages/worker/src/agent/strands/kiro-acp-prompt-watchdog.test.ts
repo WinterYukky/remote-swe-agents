@@ -1,5 +1,5 @@
 /**
- * Prompt-watchdog tests for KiroAcpAgent.stream().
+ * Watchdog tests for KiroAcpAgent.stream().
  * Uses fake timers to verify idle/hard-wall behavior without real delays.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -129,7 +129,7 @@ describe('retry wiring: timeout → dispose → retry', () => {
 
   it('session is preserved on timeout (kiroSessionId not cleared)', () => {
     // This verifies the design invariant: watchdog is a prompt-phase error,
-    // so the narrowing applies: session is preserved, kiroSessionId stays.
+    // so the session-preserving narrowing applies: kiroSessionId stays.
     // The loop's catch for timeout does NOT call clearSessionKiroSessionId.
     // (Structural verification — the clear function is only called in the
     // start-phase catch, never in the prompt-phase catch.)
@@ -144,7 +144,7 @@ describe('retry wiring: timeout → dispose → retry', () => {
   });
 });
 
-describe('single-deferred watchdog survives yield gap', () => {
+describe('C-1 fix: single-deferred watchdog survives yield gap', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -172,7 +172,7 @@ describe('single-deferred watchdog survives yield gap', () => {
 
     // NOW simulate "yield gap" — consumer is processing, no new events pushed.
     // The idle timer should fire during this gap.
-    // With a per-iteration promise, the reject would be lost.
+    // With the C-1 bug (per-iteration promise), the reject would be lost.
     // With the fix (single deferred), it hits the shared promise.
 
     // Don't push any more events — the next nextUpdate will hang until
@@ -193,7 +193,7 @@ describe('single-deferred watchdog survives yield gap', () => {
   it('single deferred promise pattern: reject is never lost regardless of race settlement order', async () => {
     // Structural test: verify that a single promise rejected after the first
     // race settled will still reject in subsequent races.
-    // This is the core single-deferred invariant.
+    // This is the core invariant C-1 requires.
     let rejectFn: ((err: Error) => void) | undefined;
     const deferred = new Promise<never>((_, reject) => {
       rejectFn = reject;
@@ -225,8 +225,8 @@ describe('permanent error detection + retry classification', () => {
   });
 
   it('getKiroPermanentErrorHint provides correct hints', () => {
-    expect(getKiroPermanentErrorHint('Image dimensions exceed the maximum')).toContain('image size');
-    expect(getKiroPermanentErrorHint('invalid_request_error')).toContain('model API constraint');
+    expect(getKiroPermanentErrorHint('Image dimensions exceed the maximum')).toContain('image size constraint');
+    expect(getKiroPermanentErrorHint('invalid_request_error')).toContain('violated a model API constraint');
   });
 
   it('non-permanent transient errors (JSON-RPC -32603) are retryable', () => {

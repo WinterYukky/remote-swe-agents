@@ -18,7 +18,9 @@ import {
   synthesizeKiroSessionFilesV3,
   kiroV3SessionFilesExist,
   kiroV3WorkspaceHash,
+  kiroV3SessionDir,
   readKiroV3SessionModelId,
+  patchKiroV3SessionAgentMode,
   DEFAULT_MAX_TURNS_FALLBACK,
   SESSION_ID_PATTERN,
   type MaterializeImageFn,
@@ -746,25 +748,22 @@ describe('atomic write semantics', () => {
 // ----------------------------------------------------------------------------
 // Regression: the leaking production session (DDB sample fixture).
 // ----------------------------------------------------------------------------
-describe('leaked-session-sample fixture (template-token leak regression)', () => {
+describe('leaked-session-sample fixture (regression for a leaked live session)', () => {
   /**
-   * 21-item synthetic reconstruction of a production DDB message stream
-   * that leaked `<|TOOL_USE|>` template literals into assistant text.
-   * The slice straddles the leak boundary so it covers both the clean
-   * turns that preceded the leak and the polluted assistant text that
-   * started conditioning the model into emitting `<|TOOL_USE|>`
-   * literals. Synthesising this fixture is the canonical regression
-   * test: kiro-cli's load invariants must accept the result without
-   * panicking, and the leaked tokens in the historical assistant text
-   * MUST flow through unchanged (the runtime guard
-   * `stripLeakedTemplateTokens` is what scrubs them at the response
-   * boundary, not the synthesiser).
+   * 21-item slice of the leaking production DDB stream that triggered
+   * this PR. The slice straddles the leak boundary at SK
+   * `001778049299127` so it covers both the clean turns that preceded
+   * the leak and the polluted assistant text that started conditioning
+   * the model into emitting `<|TOOL_USE|>` literals. Synthesising this
+   * fixture is the canonical regression test: kiro-cli's load
+   * invariants must accept the result without panicking, and the
+   * leaked tokens in the historical assistant text MUST flow through
+   * unchanged (the runtime guard `stripLeakedTemplateTokens` is what
+   * scrubs them at the response boundary, not the synthesiser).
    *
-   * All content is synthetic (rewritten in English with placeholder
-   * session ids); the structural shape of the original incident
-   * (messageType, role, SK ordering, tool_use / tool_result pairing,
-   * exact count and position of polluted assistant messages, and a
-   * user message that echoes leaked tokens back) is preserved.
+   * Content fields longer than 800 characters were truncated to keep
+   * the fixture small; the structural shape (messageType, role, SK
+   * ordering, tool_use / tool_result pairing) is preserved.
    */
   let tmpDir: string;
   let fixture: MessageItem[];
@@ -902,6 +901,45 @@ describe('v3 session synthesis (KAS engine store)', () => {
       expect(typeof parsed.id).toBe('string');
       expect(Number.isNaN(Date.parse(parsed.timestamp))).toBe(false);
     }
+  });
+
+  test('records metadata.agentMode from the agentMode option (profile applied on session/load)', async () => {
+    const cwd = '/tmp/v3-cwd';
+    const result = await synthesizeKiroSessionFilesV3({
+      sessionId: 'sess_mode-1',
+      cwd,
+      items: [item('001000000000001', 'user', [{ text: 'q' }], 'userMessage')],
+      home: tmpDir,
+      agentMode: 'remote-swe-worker',
+    });
+    const meta = JSON.parse(await fs.promises.readFile(result.jsonPath, 'utf8'));
+    // Without this, KAS hydrateSessionForLoad reads agentMode:'vibe' and never
+    // applies the remote-swe profile → MCP tools never reach the model.
+    expect(meta.agentMode).toBe('remote-swe-worker');
+  });
+
+  test('patchKiroV3SessionAgentMode updates an existing session.json in place (idempotent)', async () => {
+    const cwd = '/tmp/v3-cwd';
+    // Simulate a session first synthesised with the default 'vibe' mode (older
+    // build / files-already-exist resume path where synth is skipped).
+    await synthesizeKiroSessionFilesV3({
+      sessionId: 'sess_patch-1',
+      cwd,
+      items: [item('001000000000001', 'user', [{ text: 'q' }], 'userMessage')],
+      home: tmpDir,
+    });
+    const jsonPath = path.join(kiroV3SessionDir('sess_patch-1', cwd, tmpDir), 'session.json');
+    expect(JSON.parse(await fs.promises.readFile(jsonPath, 'utf8')).agentMode).toBe('vibe');
+
+    // First patch rewrites it and reports true.
+    expect(patchKiroV3SessionAgentMode('sess_patch-1', cwd, 'remote-swe-worker', tmpDir)).toBe(true);
+    expect(JSON.parse(await fs.promises.readFile(jsonPath, 'utf8')).agentMode).toBe('remote-swe-worker');
+
+    // Idempotent: re-patching to the same mode is a no-op and reports false.
+    expect(patchKiroV3SessionAgentMode('sess_patch-1', cwd, 'remote-swe-worker', tmpDir)).toBe(false);
+
+    // Missing session.json is a safe no-op (never throws).
+    expect(patchKiroV3SessionAgentMode('sess_absent-1', cwd, 'remote-swe-worker', tmpDir)).toBe(false);
   });
 
   test('maps toolUse/toolResult pairs to tool_call/tool_result payloads', async () => {

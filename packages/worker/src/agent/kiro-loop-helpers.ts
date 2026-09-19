@@ -30,6 +30,50 @@ export const NON_EMPTY_DISCARD_WARNING =
   '\n<system>WARNING: Your previous response included text blocks alongside tool calls. These text blocks were NOT delivered to the user. If the text was intended for the user, you must resend it using the send_message_to_user tool.</system>';
 
 /**
+ * Turn-start canonical tool-name reminder (fix3 for the turn-initial tool-name
+ * mismatch — see the tool-name mismatch incident notes.).
+ *
+ * OBSERVED FAILURE: on a top-level kiro-cli session the model's FIRST tool call
+ * of a turn is sometimes a TRANSFORMED tool name with empty `{}` input — e.g.
+ * `Send_Message_To_User` / `Run_Command` (spaces→underscores) or
+ * `mcp_remote_swe_send_message_to_user` (a name borrowed from the OTHER
+ * frontend's naming scheme) — which the host (KAS) rejects with
+ * `Tool "X" is not available.` The 2nd+
+ * call self-corrects to the exact registered name and succeeds. The best
+ * explanation is that at turn start the model lacks a fresh presentation of the
+ * canonical names (schema is presented once at cold start; process reuse keeps the
+ * same long-lived session for hours), so it emits a plausible-but-wrong variant.
+ *
+ * This block is injected into EVERY turn's `session/prompt` (reuse AND cold
+ * paths, all trigger types) between the system envelope and the current-turn
+ * body, so the canonical naming rule is always in view at the exact point the
+ * failures occur. It is deterministic, side-effect-free, and ~40 tokens.
+ *
+ * The wording is deliberately SCHEME-NEUTRAL. Tool names differ by frontend:
+ * some environments register space-separated display names ("Run Command"),
+ * others register snake_case + `mcp_remote_swe_` prefixed names
+ * (`mcp_remote_swe_run_command`). Both are legitimate depending on where the
+ * worker runs, so the reminder must NOT assert that any particular form is the
+ * only valid one — doing so would inject active misinformation in the other
+ * environment. Instead it states the invariant that actually holds everywhere:
+ * call each tool by the EXACT name shown in the presented tool list, never
+ * transform the name (spaces↔underscores, adding/removing a prefix), and always
+ * fill in the tool's required parameters. (The empty-`{}`-input half of the
+ * observed failure is addressed by requiring the REQUIRED params specifically —
+ * some legitimate tools take no arguments at all, so a blanket "never call with
+ * empty input" would be false for them.) All 10 observed failures were
+ * name TRANSFORMATIONS of the presented name, so the neutral rule covers them.
+ * That the model reliably self-corrects after one rejection is evidence it will
+ * follow the correct name when it is present in context.
+ */
+export const TOOL_NAME_REMINDER =
+  '<system-reminder>\n' +
+  'Call each tool by the EXACT name shown in your tool list. Do NOT transform a ' +
+  'tool name — never swap spaces for underscores (or vice versa) and never add or ' +
+  "remove a prefix. Always fill in all of the tool's required parameters; never leave a required parameter empty.\n" +
+  '</system-reminder>';
+
+/**
  * Legacy history-replay delimiters retained ONLY as a leak-detection
  * signature.
  *
@@ -252,7 +296,7 @@ export const truncateToolOutput = (text: string, maxLength = TOOL_OUTPUT_TRUNCAT
  * `status:''`, v3's `in_progress` — v3 emits 3 updates: in_progress×2 →
  * completed) MUST be dropped before persist/emit, or a placeholder is written
  * early and the real output is lost + the toolResult event double-emits
- * (duplicate terminal status updates). Shared by BOTH the legacy loop and the ACP-SDK loop so the
+ * (observed triple-update sequence). Shared by BOTH the legacy loop and the ACP-SDK loop so the
  * terminal guard cannot drift. Exported for unit testing.
  */
 export const isTerminalToolStatus = (status: string): boolean => status === 'completed' || status === 'failed';
@@ -271,8 +315,8 @@ export const resolveToolResultOutput = (status: string, extracted: string | unde
 };
 
 /**
- * Per-turn bookkeeping state for the tool-boundary text DISCARD (Bedrock
- * parity). The fields are mutated in place by
+ * Per-turn bookkeeping state for the tool-boundary text DISCARD (DISCARD policy /
+ * Bedrock parity). The fields are mutated in place by
  * {@link processToolCallDiscardBoundary} and read by the end-of-turn
  * save path in `kiroAgentLoop`.
  *
@@ -319,7 +363,7 @@ export interface ToolBoundaryFlushState {
 }
 
 /**
- * Synchronous tool-boundary DISCARD dispatcher (Bedrock parity).
+ * Synchronous tool-boundary DISCARD dispatcher (DISCARD policy / Bedrock parity).
  *
  * MUST be the FIRST thing the `tool_call` branch of `handleEvent` does,
  * before ANY await. Steps (all synchronous so there is no await window
@@ -544,8 +588,8 @@ class SegmentBuilder {
  * documented escape hatch — verified empirically against kiro-cli 2.x.
  *
  * Errors fetching S3 bytes are swallowed and replaced with a placeholder
- * so one missing object doesn't poison the whole prompt (error fallback
- * for a failed S3 get).
+ * so one missing object doesn't poison the whole prompt — see spec
+ * requirement "error fallback: on S3 get failure".
  *
  * Exported for unit testing.
  */
@@ -686,6 +730,8 @@ export const buildKiroPromptBlocks = async (params: {
   //   <systemBody>
   //   <|/SYSTEM_PROMPT|>
   //
+  //   <toolNameReminder>  ← fix3: canonical tool-name reminder (turn-start)
+  //
   //   <currentTurnBody>  ← text + optional image / file segments
   //
   // The current-turn body is a sequence of segments (text + image + file);
@@ -695,6 +741,10 @@ export const buildKiroPromptBlocks = async (params: {
   const wrapper = new SegmentBuilder();
   wrapper.appendText(`${SYSTEM_PROMPT_OPEN}\n${sanitizedSystem}`);
   wrapper.appendText(`\n${SYSTEM_PROMPT_CLOSE}\n\n`);
+  // fix3: canonical tool-name reminder immediately before the current-turn
+  // body, so it is the last system-level text the model reads before acting —
+  // the exact point where the turn-initial mangled-name failures occur.
+  wrapper.appendText(`${TOOL_NAME_REMINDER}\n\n`);
   renderCurrentTurnIntoBuilder(currentBlocks, wrapper);
 
   return materialisePromptSegments(wrapper.build(), {
@@ -869,7 +919,7 @@ const RETRIGGER_BUDGET_MS = 30 * 60 * 1000; // 30 min
  * delivers nothing to Slack / the webapp / the parent. (Previously the raw
  * `[System] Prompt failed after retry: ...kiro-cli wedged...` string was put
  * in `previewText`, which `shouldSuppressFinalize` did NOT recognise as a
- * placeholder, so it leaked verbatim.) The
+ * placeholder, so it leaked verbatim — observed live.) The
  * error is still persisted by the caller as an internal-only message type and
  * logged to CloudWatch for observability.
  *
@@ -928,17 +978,17 @@ export interface RetryFailureDeps {
 }
 
 /**
- * Shared retry-failure handler (legacy handleRetryFailure parity plus the
- * image-dimension fast-fail). Called when a retry attempt fails — the general
- * ladder retry OR the image-dimension recovery retry — so both paths share ONE
+ * Shared retry-failure handler (legacy handleRetryFailure parity, L3380-3435 +
+ * fast-fail). Called when a retry attempt fails — the general
+ * retry OR the image-dimension recovery retry — so both paths share ONE
  * decision surface (no drift):
  *
  *   1. fast-fail: if the retry failure is ITSELF an image dimension
  *      error, do NOT enter the auto-retrigger burst (that was the 30-min loop
  *      incident). Surface once with abnormalTermination. fast-fail is a
- *      permanent surface → error-bubble pattern (persist + messageSK on result).
+ *      permanent surface → C-2 bubble pattern (persist + messageSK on result).
  *   2. otherwise schedule a transparent auto-retrigger within the time budget;
- *   3. or give up (also an error bubble) once the budget is exhausted.
+ *   3. or give up (also C-2 bubble) once the budget is exhausted.
  *
  * Exported + dependency-injected so the fast-fail regression and giveup-bubble
  * behaviours are unit-testable against real code (Test Effectiveness Rule).
@@ -987,7 +1037,7 @@ export const buildRetryFailureResult = async (
     RETRIGGER_GIVEUP_MESSAGE_TYPE
   );
   // Give-up is user-facing: persist the notification as an 'assistant' bubble
-  // and attach its SK so finalize delivers with the same SK (error-bubble pattern).
+  // and attach its SK so finalize delivers with the same SK.
   const userFacingText = toUserFacingTurnError(errorFeedback);
   const messageSK = await deps.persistErrorBubble(deps.workerId, userFacingText);
   const giveUpResult = buildPromptFailureResult(errorMessage, errorFeedback, null);
@@ -999,7 +1049,7 @@ export const buildRetryFailureResult = async (
 /**
  * Deps for {@link runImageDimensionRecovery}. dispose / invalidate / resynth /
  * startFreshAgent / runPrompt are injected so the orchestration ORDER (dispose
- * BEFORE invalidate — the SIGTERM-flush race — then resynth, then a single
+ * BEFORE invalidate — the SIGTERM-flush-race fix — then resynth, then a single
  * retry) runs for real in tests while the real subprocess/fs/DDB stay faked.
  */
 export interface ImageDimensionRecoveryDeps<TResult> {
@@ -1024,8 +1074,8 @@ export type ImageDimensionRecoveryOutcome<TResult> =
   | { kind: 'retry-failed'; error: unknown };
 
 /**
- * Same-turn image-dimension recovery orchestration (ported from the Bedrock
- * loop). Enforces the order: dispose → invalidate → resynth → fresh agent →
+ * Same-turn image-dimension recovery orchestration.
+ * Enforces the recovery order: dispose → invalidate → resynth → fresh agent →
  * one retry prompt. kiroSessionId is preserved — the caller passes the
  * same {@link ImageDimensionRecoveryDeps.effectiveSessionId} to invalidate and
  * resynth so the re-synthesis writes to the id that load will look up.
@@ -1038,7 +1088,7 @@ export type ImageDimensionRecoveryOutcome<TResult> =
 export const runImageDimensionRecovery = async <TResult>(
   deps: ImageDimensionRecoveryDeps<TResult>
 ): Promise<ImageDimensionRecoveryOutcome<TResult>> => {
-  await deps.dispose(); // dispose FIRST so kiro-cli cannot flush files back after deletion
+  await deps.dispose(); // Dispose FIRST so kiro-cli cannot flush files back after deletion
   deps.invalidate(deps.effectiveSessionId, deps.cwd);
   try {
     await deps.resynth(deps.effectiveSessionId, deps.cwd);
@@ -1061,6 +1111,43 @@ export const runImageDimensionRecovery = async <TResult>(
   } catch (error) {
     return { kind: 'retry-failed', error };
   }
+};
+
+/** Minimal shape of synthesizeKiroSessionFilesV3 needed by the resynth factory. */
+export type ResynthFn = (opts: {
+  sessionId: string;
+  cwd: string;
+  items: MessageItem[];
+  modelId?: string;
+  agentMode?: string;
+}) => Promise<unknown>;
+
+/**
+ * Build the `resynth` callback for {@link runImageDimensionRecovery}.
+ *
+ * the image-recovery resynth MUST forward `agentMode` (the custom-agent
+ * profile id) just like the initial synth, otherwise the re-synthesised
+ * session.json is written as the default 'vibe' and the immediately-following
+ * `startFreshAgent()` → session/load reads it, dropping the remote-swe profile
+ * (MCP tools missing) for that one retry prompt. The L321 patch runs earlier in
+ * the turn and cannot cover this later re-synthesis. Extracted + exported so
+ * the agentMode forwarding is exercised against real code in a unit test.
+ */
+export const makeImageRecoveryResynth = (deps: {
+  synthesize: ResynthFn;
+  computeItems: () => MessageItem[];
+  modelId?: string;
+  agentMode?: string;
+}): ((sessionId: string, cwd: string) => Promise<void>) => {
+  return async (sessionId: string, cwd: string): Promise<void> => {
+    await deps.synthesize({
+      sessionId,
+      cwd,
+      items: deps.computeItems(),
+      modelId: deps.modelId,
+      agentMode: deps.agentMode,
+    });
+  };
 };
 
 /**
@@ -1159,7 +1246,7 @@ export const getKiroPermanentErrorHint = (msg: string): string => {
  * Deliberately BROADER than {@link isKiroPermanentError} (which stays narrow to
  * `dimensions+exceed`): the asymmetry is intentional main behaviour — the
  * recovery gate must catch `image+size` and `imagevalidationerror` too, while
- * the permanent-stop classifier must not widen (legacy parity).
+ * the permanent-stop classifier must not widen (parity with the legacy loop).
  */
 export const isImageDimensionError = (msg: string): boolean => {
   const lower = msg.toLowerCase();
@@ -1226,7 +1313,7 @@ export const invalidateKiroSessionFiles = (sessionId: string, cwd: string): void
  * Normalise a tool name for the {@link IMAGE_READ_TOOL_NAMES} gate: strip
  * spaces, underscores and hyphens then lowercase so ACP v3 display names
  * ("Read File"), snake_case ("read_file") and camelCase ("readFile") all
- * collapse to the same key. Verbatim port from the legacy implementation — this is a
+ * collapse to the same key. Verbatim port from the legacy loop — this is a
  * DIFFERENT normalisation from the shared tool-name-utils normaliser (that one
  * preserves separators), so it must NOT be reused here.
  */
@@ -1444,7 +1531,7 @@ export const isKiroCliMode = (inferenceMode: string | undefined): inferenceMode 
  * `at(-1)` fallback (a toolResult with no renderable text/image), and
  * the caller's `hasRenderable` gate would silently skip the turn —
  * dropping every user message queued before the cancellation. This is
- * a regression observed in E2E testing (three rapid user messages
+ * the regression observed in the PR #90 E2E (three rapid user messages
  * lost after a long tool chain got cancelled).
  *
  * When the tail contains no eligible items (the history ends with an
@@ -1472,7 +1559,7 @@ export const buildAggregatedCurrentTurn = (
   // would stop at the last tool_use, leave only the trailing tool_result
   // in `tail`, fail the eligibility filter, and silently drop every user
   // message queued before the cancellation — the exact regression observed
-  // in E2E testing (three rapid user messages disappeared because
+  // in the PR #90 E2E (three rapid user messages disappeared because
   // tool_chain remnants from the cancelled prior turn acted as the
   // boundary). Treating an assistant with no text content as "not a real
   // reply" folds the whole unfinished tool chain into the current turn so
@@ -1906,7 +1993,7 @@ export const classifyKiroFailure = (msg: string): KiroFailureClass => {
 /**
  * Parse a non-negative integer from an env var, falling back to `fallback`
  * when unset / empty / not a finite non-negative number. Shared by the retry
- * ladder and the probe/reuse timeout tunables.
+ * ladder and the probe/pool timeout tunables.
  */
 export const parseIntEnv = (name: string, fallback: number): number => {
   const raw = process.env[name];

@@ -176,7 +176,7 @@ describe('deployKiroWorkspaceFiles', () => {
     expect(matches.length).toBe(1);
   });
 
-  test('CR2: does NOT destroy existing real .kiro/ directory', () => {
+  test('does NOT destroy existing real .kiro/ directory', () => {
     const skill = makeSkill('skill-1');
     const skillDir = path.join(skillsDir, skill.SK);
     fs.mkdirSync(path.join(skillDir, '.kiro', 'agents'), { recursive: true });
@@ -202,12 +202,12 @@ describe('deployKiroWorkspaceFiles', () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('real .kiro/ directory'));
     warnSpy.mockRestore();
 
-    // CR2 skip path returns undefined — hooks are not discoverable via symlink
+    // the real-.kiro safeguard skip path returns undefined — hooks are not discoverable via symlink
     // so --agent must NOT be passed to avoid referencing a potentially missing agent JSON
     expect(result).toBeUndefined();
   });
 
-  test('CR2: replaces existing symlink on redeploy', () => {
+  test('replaces existing symlink on redeploy', () => {
     const skill = makeSkill('skill-1');
     const skillDir = path.join(skillsDir, skill.SK);
     fs.mkdirSync(path.join(skillDir, '.kiro', 'agents'), { recursive: true });
@@ -226,15 +226,43 @@ describe('deployKiroWorkspaceFiles', () => {
     expect(fs.lstatSync(path.join(repoCwd, '.kiro')).isSymbolicLink()).toBe(true);
   });
 
-  test('skips skills without .kiro directory', () => {
+  test('deploys base worker agent + symlink even when no skill provides .kiro', () => {
     const skill = makeSkill('skill-no-kiro');
     const skillDir = path.join(skillsDir, skill.SK);
     fs.mkdirSync(skillDir, { recursive: true });
     fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: x\ndescription: y\n---\nBody');
 
     const result = deployKiroWorkspaceFiles([skill], repoCwd, workerId);
-    expect(result).toBeUndefined();
-    expect(fs.existsSync(path.join(repoCwd, '.kiro'))).toBe(false);
+    // No skill declares a kiroAgent → the always-deployed base worker agent is
+    // returned so the session runs under a profile with includeMcpJson:true.
+    expect(result).toBe('remote-swe-worker');
+    // Symlink is now created unconditionally (base profile must be discoverable).
+    const repoKiroLink = path.join(repoCwd, '.kiro');
+    expect(fs.lstatSync(repoKiroLink).isSymbolicLink()).toBe(true);
+    // The base agent JSON exists and enables MCP exposure.
+    const baseAgentJson = path.join(repoCwd, '.kiro', 'agents', 'remote-swe-worker.json');
+    expect(fs.existsSync(baseAgentJson)).toBe(true);
+    const parsed = JSON.parse(fs.readFileSync(baseAgentJson, 'utf-8'));
+    expect(parsed.includeMcpJson).toBe(true);
+    expect(parsed.tools).toBe('*');
+  });
+
+  test('a skill-declared kiroAgent takes precedence over the base worker agent', () => {
+    const skill = makeSkill('skill-with-agent');
+    const skillDir = path.join(skillsDir, skill.SK);
+    fs.mkdirSync(path.join(skillDir, '.kiro', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(skillDir, '.kiro', 'agents', 'myagent.json'), '{}');
+    fs.writeFileSync(
+      path.join(skillDir, 'SKILL.md'),
+      '---\nname: with-agent\ndescription: has agent\nkiro-agent: myagent\n---\nBody'
+    );
+
+    const result = deployKiroWorkspaceFiles([skill], repoCwd, workerId);
+    // Skill's kiroAgent wins; base worker agent does NOT override it.
+    expect(result).toBe('myagent');
+    // Base agent JSON is still deployed alongside (harmless, not activated).
+    expect(fs.existsSync(path.join(repoCwd, '.kiro', 'agents', 'remote-swe-worker.json'))).toBe(true);
+    expect(fs.existsSync(path.join(repoCwd, '.kiro', 'agents', 'myagent.json'))).toBe(true);
   });
 
   test('W1: most recently updated skill wins on conflicting files', () => {
@@ -263,7 +291,7 @@ describe('deployKiroWorkspaceFiles', () => {
     expect(content).toBe('new-content');
   });
 
-  test('W2: cleans stale hooks on redeployment', () => {
+  test('cleans stale hooks on redeployment', () => {
     const skill = makeSkill('skill-1');
     const skillDir = path.join(skillsDir, skill.SK);
     fs.mkdirSync(path.join(skillDir, '.kiro', 'hooks'), { recursive: true });
@@ -287,7 +315,7 @@ describe('deployKiroWorkspaceFiles', () => {
     expect(fs.existsSync(path.join(kiroWorkspace, '.kiro', 'hooks', 'hook-v2.sh'))).toBe(true);
   });
 
-  test('W3: rejects invalid kiro-agent name and skips deployment', () => {
+  test('rejects invalid kiro-agent name and skips deployment', () => {
     const skill = makeSkill('skill-bad-name');
     const skillDir = path.join(skillsDir, skill.SK);
     fs.mkdirSync(path.join(skillDir, '.kiro', 'hooks'), { recursive: true });
@@ -298,8 +326,10 @@ describe('deployKiroWorkspaceFiles', () => {
     );
 
     const result = deployKiroWorkspaceFiles([skill], repoCwd, workerId);
-    expect(result).toBeUndefined();
-    expect(fs.existsSync(path.join(repoCwd, '.kiro'))).toBe(false);
+    // Invalid kiro-agent name is skipped; with no valid skill agent the base
+    // worker agent is activated (always-deployed profile), not undefined.
+    expect(result).toBe('remote-swe-worker');
+    expect(fs.lstatSync(path.join(repoCwd, '.kiro')).isSymbolicLink()).toBe(true);
   });
 
   test('C2: throws when agent JSON is missing after deployment', () => {
@@ -370,14 +400,23 @@ describe('deployKiroWorkspaceFiles', () => {
     warnSpy.mockRestore();
   });
 
-  test('CR3/CR4: returns undefined when deployment is skipped (no .kiro in skills)', () => {
+  test('returns undefined (safe fallback) when repoCwd has a real user-owned .kiro', () => {
+    // real-.kiro edge: when the user repo already has a real .kiro dir, we bail
+    // (no symlink, no modeId) so the base profile is NOT activated and the
+    // session degrades to today's default behaviour rather than clobbering the
+    // user's dir. This is the one path that still returns undefined.
     const skill = makeSkill('skill-no-kiro');
     const skillDir = path.join(skillsDir, skill.SK);
     fs.mkdirSync(skillDir, { recursive: true });
     fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '---\nname: x\ndescription: y\n---\nBody');
+    // Pre-create a real (non-symlink) .kiro in the repo.
+    fs.mkdirSync(path.join(repoCwd, '.kiro'), { recursive: true });
 
     const result = deployKiroWorkspaceFiles([skill], repoCwd, workerId);
     expect(result).toBeUndefined();
+    // User's real .kiro is preserved (not replaced by a symlink).
+    expect(fs.lstatSync(path.join(repoCwd, '.kiro')).isSymbolicLink()).toBe(false);
+    expect(fs.lstatSync(path.join(repoCwd, '.kiro')).isDirectory()).toBe(true);
   });
 
   test('W-D: KIRO_WORKSPACE_BASE is injectable via env var', () => {
@@ -480,7 +519,7 @@ describe('resolveKiroAgentName', () => {
     expect(result).toBeUndefined();
   });
 
-  test('W3: skips skills with invalid kiro-agent names', () => {
+  test('skips skills with invalid kiro-agent names', () => {
     const skill1 = makeSkill('skill-bad', 2000);
     const skill2 = makeSkill('skill-good', 1000);
 

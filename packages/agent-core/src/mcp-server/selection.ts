@@ -32,6 +32,7 @@ import { listSessionsTool } from '../tools/list-sessions';
 import { reparentSessionTool } from '../tools/reparent-session';
 import { searchSessionsTool } from '../tools/search-sessions';
 import { exportSessionDiagnosticsTool } from '../tools/export-session-diagnostics';
+import { previewTools } from '../tools';
 
 /**
  * Tools exposed to Kiro sessions as an MCP server.
@@ -102,6 +103,8 @@ export const kiroExportedTools: ToolDefinition<unknown>[] = [
   reparentSessionTool,
   searchSessionsTool,
   exportSessionDiagnosticsTool,
+  // preview (MicroVM port-forwarding) — conditional on PREVIEW_MICROVM_IMAGE_ARN
+  ...previewTools,
 ] as unknown as ToolDefinition<unknown>[];
 
 /** Tool names exposed over MCP. Used for tests / debugging. */

@@ -200,7 +200,7 @@ describe('KiroAgentPool', () => {
   });
 });
 
-describe('tunables', () => {
+describe('pool tunables', () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it('kiroProcessReuseEnabled default ON, off-forms disable', () => {

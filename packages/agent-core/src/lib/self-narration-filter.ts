@@ -115,6 +115,33 @@ export const REHASH_SIMILARITY_THRESHOLD = 0.7;
  */
 export const REHASH_MAX_LENGTH_RATIO = 0.85;
 
+/**
+ * Minimum candidate/prior length ratio for the containment signal to fire.
+ *
+ * The MAX ratio guards the "similarly-long achievement report" false positive.
+ * This MIN ratio guards the SYMMETRIC failure at the other end: a SHORT
+ * candidate against a MUCH LONGER prior. Containment is asymmetric
+ * (|cand∩prior| / |cand|), so a short reply whose few bigrams happen to also
+ * occur somewhere in a long prior scores near 1.0 even when it is NOT a
+ * restatement of that prior — it merely quotes a shared token (a repo name, a
+ * path, a proper noun) that the long message also mentioned.
+ *
+ * Observed live: a short one-line reply naming a repository scored 0.906
+ * containment against a 695-char delivery purely because the repo name
+ * appeared in both, and was wrongly suppressed. Its length ratio was 0.05.
+ *
+ * A genuine rehash is a CONDENSATION of comparable scale: calibration
+ * condensations run 0.51–0.52 of the source length. Requiring the candidate to
+ * be at least 0.30 of the prior separates the two with a wide margin on both
+ * sides (0.05 ≪ 0.30 ≪ 0.51) — it drops the short-quote false positive while
+ * leaving genuine condensed restatements that are IN-BAND (ratio ≥ 0.30) still
+ * caught. A genuine restatement whose ratio falls BELOW 0.30 (e.g. a one-line
+ * paraphrase of a very long delivery) is a deliberate FALSE NEGATIVE: per the
+ * module's conservatism contract (a false positive is far worse than a false
+ * negative) this trade is intentional.
+ */
+export const REHASH_MIN_LENGTH_RATIO = 0.3;
+
 /** Build the set of adjacent character bigrams of a normalised string. */
 const characterBigrams = (normalised: string): Set<string> => {
   const grams = new Set<string>();
@@ -153,12 +180,17 @@ export const containmentScore = (candidate: string, prior: string): number => {
 export const isRehashContainment = (candidate: string, prior: string): boolean => {
   const c = normalizeForDedup(candidate);
   if (c.length < MIN_REHASH_LENGTH) return false;
-  // A rehash is a condensation: the candidate must be meaningfully SHORTER than
-  // the prior it restates. A candidate that is nearly as long as (or longer
-  // than) the prior is treated as new content, not a summary — this blocks the
-  // "conditional statement → similarly-long achievement report" false positive.
+  // A rehash is a condensation of COMPARABLE scale to its source. Two length
+  // guards bound the eligible band on both sides:
+  //   - MAX (candidate must be meaningfully SHORTER than the prior) blocks the
+  //     "conditional statement → similarly-long achievement report" FP.
+  //   - MIN (candidate must not be TINY relative to the prior) blocks the
+  //     "short reply quoting a shared token found in a long prior" FP — the
+  //     asymmetric containment score is near 1.0 there by coincidence, not
+  //     because the reply restates the long message.
   const p = normalizeForDedup(prior);
   if (c.length > p.length * REHASH_MAX_LENGTH_RATIO) return false;
+  if (c.length < p.length * REHASH_MIN_LENGTH_RATIO) return false;
   return containmentScore(candidate, prior) >= REHASH_CONTAINMENT_THRESHOLD;
 };
 

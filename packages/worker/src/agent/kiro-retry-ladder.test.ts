@@ -133,7 +133,7 @@ describe('decideRetryLadder', () => {
     ).toBe('retry');
   });
 
-  it('precedence: permanent still wins over tool-activity/hard-wall/total', () => {
+  it('Precedence: permanent still wins over tool-activity/hard-wall/total', () => {
     expect(
       decideRetryLadder('permanent', {}, { maxPerClass: 0, emptyResponseEnabled: false, toolActivityThisAttempt: true })
     ).toBe('permanent');

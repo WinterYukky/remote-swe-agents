@@ -7,7 +7,9 @@
  * write there must be a framed JSON-RPC message. Remote-swe tool handlers
  * (and several agent-core/lib helpers) historically call `console.log` to
  * surface progress / debug info. If any of those writes land on stdout the
- * MCP client sees a malformed JSON-RPC stream and fails the tool call.
+ * kiro-cli ACP client sees a malformed JSON-RPC stream and surfaces the
+ * tool call as `status: failed` — which is exactly what the E2E run
+ * reproduced.
  *
  * Redirect `console.log` / `console.info` / `console.debug` to stderr at
  * process start (before anything else imports), keeping `console.warn` /

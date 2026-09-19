@@ -1,9 +1,9 @@
 /**
- * Image-dimension recovery helper tests (ported from the Bedrock loop).
+ * Image-dimension recovery helper tests.
  * These exercise the REAL exported helpers against a real temp HOME (no mock
  * simulation): the invalidate path deletes files on disk and is verified via
  * the SAME kiroV3SessionFilesExist / kiroV3SessionDir path helpers the
- * production loop uses (single source of truth).
+ * production loop uses (single source of truth — Reviewer Q1a).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import * as fs from 'fs';
@@ -15,11 +15,51 @@ import {
   isImageDimensionError,
   invalidateKiroSessionFiles,
   extractImagePathFromToolInput,
+  makeImageRecoveryResynth,
 } from './kiro-loop-helpers';
 import { kiroV3SessionDir, kiroV3SessionFilesExist } from './kiro-session-synth';
 
-// ---- normalizeToolNameForComparison (verbatim legacy port) -----------------
-describe('normalizeToolNameForComparison (verbatim legacy port: strip space/underscore/hyphen + lowercase)', () => {
+describe('makeImageRecoveryResynth (agentMode forwarded through image-recovery resynth)', () => {
+  test('forwards agentMode (and modelId/items/session) to the real synthesize fn', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const resynth = makeImageRecoveryResynth({
+      synthesize: async (opts) => {
+        calls.push(opts);
+        return undefined;
+      },
+      computeItems: () => [{ SK: '001' }] as never,
+      modelId: 'claude-sonnet-4.5',
+      agentMode: 'remote-swe-worker',
+    });
+
+    await resynth('sess-keep', '/tmp/ws');
+
+    expect(calls).toHaveLength(1);
+    // The whole point of the fix: agentMode must reach synthesize, else the
+    // re-synthesised session.json is 'vibe' and the retry loses the profile.
+    expect(calls[0]!.agentMode).toBe('remote-swe-worker');
+    expect(calls[0]!.sessionId).toBe('sess-keep');
+    expect(calls[0]!.cwd).toBe('/tmp/ws');
+    expect(calls[0]!.modelId).toBe('claude-sonnet-4.5');
+    expect(calls[0]!.items).toEqual([{ SK: '001' }]);
+  });
+
+  test('passes agentMode=undefined through unchanged (default vibe when no profile)', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const resynth = makeImageRecoveryResynth({
+      synthesize: async (opts) => {
+        calls.push(opts);
+        return undefined;
+      },
+      computeItems: () => [],
+    });
+    await resynth('s', '/w');
+    expect(calls[0]!.agentMode).toBeUndefined();
+  });
+});
+
+// ---- normalizeToolNameForComparison ----------------------------------------
+describe('normalizeToolNameForComparison (strip space/underscore/hyphen + lowercase)', () => {
   test('ACP v3 display name "Read File" collapses to readfile', () => {
     expect(normalizeToolNameForComparison('Read File')).toBe('readfile');
   });

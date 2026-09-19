@@ -1,10 +1,10 @@
 /**
- * Abandoned-waiter regression: message loss in stream()'s probe/idle
+ * Regression: abandoned-waiter message loss in stream()'s probe/liveness idle
  * branch, using the REAL ManualSession + real stream().
  *
- * Origin: adapted from a review proof-of-concept. The
+ * Origin: adapted from the Reviewer's PoC (originally review-poc.test.ts). The
  * PoC proved the BUG green (probe reported no-ack because a cancel ack was
- * delivered to the abandoned race waiter). After the fix (a single shared
+ * delivered to the abandoned race waiter). After the shared-waiter fix (a single shared
  * `pendingNext` waiter reused across the race + probe), these tests assert the
  * FIXED behaviour: the cancel ack reaches the probe and stream() recovers
  * non-lethally (re-prompt) instead of throwing the lethal idle error.
@@ -70,7 +70,7 @@ describe('cancel probe vs the (former) abandoned race waiter', () => {
     expect(notify).toHaveBeenCalledWith('session/cancel', { sessionId });
     const promptCountAtProbe = promptCount;
 
-    // kiro-cli acks the cancel now (it IS alive). With the single-waiter fix the
+    // kiro-cli acks the cancel now (it IS alive). With the shared-waiter fix the single
     // shared waiter is the probe's, so this ack reaches the probe.
     (session as unknown as { pushStop: (r: { stopReason: string }) => void })['pushStop']({
       stopReason: 'cancelled',

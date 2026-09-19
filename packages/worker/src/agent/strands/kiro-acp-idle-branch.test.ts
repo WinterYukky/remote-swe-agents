@@ -3,7 +3,7 @@
  * REAL stream() + ManualSession (subprocess bypassed via injected fields).
  * Covers: probe no-ack → lethal idle throw; alive-cancelled → reset + re-prompt.
  * (single-waiter reuse is covered by kiro-acp-abandoned-waiter.test.ts;
- *  the toolProbe timer and tick threshold are covered by
+ *  the toolProbe timer and CPU-advance threshold are covered by
  *  watchdog-controller.test.ts + proc-liveness.test.ts.)
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -46,7 +46,7 @@ describe('stream() idle branch integration', () => {
     expect(notify).toHaveBeenCalledWith('session/cancel', { sessionId });
   }, 10_000);
 
-  it('a non-cancelled stop arriving in the probe window returns as a COMPLETED turn (no re-prompt)', async () => {
+  it('the corrected cancel window: a non-cancelled stop arriving in the probe window returns as a COMPLETED turn (no re-prompt)', async () => {
     const sessionId = 'idle-completed';
     let promptCount = 0;
     const ctx = {

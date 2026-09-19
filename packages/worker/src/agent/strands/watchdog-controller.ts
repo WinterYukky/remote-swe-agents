@@ -6,7 +6,7 @@
  * Two distinct signals (non-lethal recovery):
  *  - `failure` (Promise<never>): rejects ONLY on the hard wall-clock ceiling.
  *    This is the unconditional runaway guard and is always lethal (the loop
- *    disposes + respawns). Single-deferred pattern: once rejected it
+ *    disposes + respawns). Single-deferred pattern (C-1 fix): once rejected it
  *    stays rejected, so it fires regardless of yield timing between iterations.
  *  - `idle` (Promise<void>): RESOLVES (does not reject) when the idle timeout
  *    elapses with no tool in-flight. Resolving rather than rejecting lets

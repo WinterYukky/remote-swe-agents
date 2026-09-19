@@ -22,6 +22,16 @@
 export const PROMPT_SETTLE_WEDGED_ERROR =
   'kiro-cli prompt did not settle before timeout; subprocess wedged (recycle required to avoid "Prompt already in progress")';
 
+/**
+ * When `waitForReady` is true, kiro-cli (KAS) awaits this server's MCP
+ * connect + tool-listing BEFORE assembling the turn's tool set, instead of the
+ * default fire-and-forget connect. This is defence-in-depth for the MCP-exposure
+ * ordering race: a freshly-spawned stdio MCP server takes ~2-6s to connect, and
+ * without waiting KAS can select the turn's tools before the connect finishes,
+ * silently dropping every MCP tool for that turn. Verified as a real MCP-server
+ * wire field against KAS 2.19.1. (The primary fix is exposing the tools
+ * via an active agent profile with includeMcpJson; see MCP-D backlog.)
+ */
 export type KiroAcpMcpServer =
   | {
       type: 'stdio';
@@ -29,18 +39,21 @@ export type KiroAcpMcpServer =
       command: string;
       args: string[];
       env: { name: string; value: string }[];
+      waitForReady?: boolean;
     }
   | {
       type: 'http';
       name: string;
       url: string;
       headers: { name: string; value: string }[];
+      waitForReady?: boolean;
     }
   | {
       type: 'sse';
       name: string;
       url: string;
       headers: { name: string; value: string }[];
+      waitForReady?: boolean;
     };
 
 export interface KiroPromptResult {

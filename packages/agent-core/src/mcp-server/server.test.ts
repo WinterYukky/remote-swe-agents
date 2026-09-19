@@ -99,9 +99,9 @@ describe('remote-swe MCP server', () => {
   });
 
   test('tools/call does NOT resolve a transformed name (exact-match only after the snake_case rename)', async () => {
-    // Tool lookup is exact-match only: a space/underscore variant of a
-    // registered id must hard-fail as not-found (the snake_case rename makes
-    // the model emit the exact id, so no tolerant remap is warranted).
+    // The tolerant remap was removed with the snake_case rename; a space/underscore variant of a
+    // registered id must now hard-fail as not-found (the rename makes the model
+    // emit the exact id, so no remap is warranted).
     const { client } = await connectPair([makeEchoTool('send_message_to_user') as unknown as ToolDefinition<unknown>]);
     const res = await client.callTool({ name: 'Send Message To User', arguments: { text: 'hi' } });
     expect(res.isError).toBe(true);
@@ -116,11 +116,11 @@ describe('remote-swe MCP server', () => {
   });
 
   test('a handler that calls console.log does NOT leak onto MCP response stream', async () => {
-    // Several remote-swe tool helpers (sendWebappEvent, middleOutFiltering,
+    // This is the root cause of E2E Tester's "Tool failed." observation:
+    // several remote-swe tool helpers (sendWebappEvent, middleOutFiltering,
     // …) write progress to console.log, which shares stdout with the MCP
-    // stdio transport and can corrupt the JSON-RPC stream. The production
-    // fix lives in mcp-server/bin.ts, which redirects console.log to
-    // stderr before any tool module loads.
+    // transport. The production fix lives in mcp-server/bin.ts, which
+    // redirects console.log to stderr before any tool module loads.
     //
     // At the McpServer level the rule is simpler: the server's own writes
     // to the transport must be the ONLY result surface. The test below

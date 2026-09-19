@@ -376,6 +376,37 @@ As our agent can work as an MCP client, you can easily integrate it with various
 
 All the new agents can now use MCP servers as their tools.
 
+#### Injecting secrets into MCP servers
+
+If an MCP server needs a credential (API token, OAuth file, etc.), you can
+reference a secret stored in **AWS Secrets Manager** from `mcpConfig` instead of
+hard-coding it. Two placeholders are supported in a stdio server's
+`command`/`args`/`env`:
+
+- `${secret:NAME}` — replaced inline with the secret's string value.
+- `${secretFile:NAME}` — replaced with the path to a `0600` file containing the
+  secret (use this for credentials a server reads from a file).
+
+`NAME` maps to the secret `remote-swe/mcp-secrets/NAME`, which you create
+yourself:
+
+```bash
+aws secretsmanager create-secret \
+  --name "remote-swe/mcp-secrets/<NAME>" \
+  --secret-string "the-secret-value"
+```
+
+Two things to keep in mind:
+
+- Put tokens/keys in `env` or `${secretFile:...}`, **not** in `command`/`args` —
+  the command line is visible via `/proc/<pid>/cmdline`.
+- Scanning is textual: any `${secret:...}`-shaped string is treated as a real
+  placeholder, and an invalid/unknown name makes the whole server fail to start
+  (fail-closed).
+
+See [docs/mcp-secret-injection.md](./docs/mcp-secret-injection.md) for the full
+guide and details.
+
 ## How it works
 
 This system utilizes a Slack Bolt application to manage user interactions and implement a scalable worker system. Here's the main workflow:

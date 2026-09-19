@@ -1,16 +1,21 @@
 /**
- * kiroAcpSdkAgentLoop — ACP-SDK-based Kiro backend loop
+ * kiroAcpSdkAgentLoop — ACP-SDK-based Kiro backend loop (LIVE production path)
  * ==============================================================================
  * Drives `kiro-cli acp` through the official `@agentclientprotocol/sdk` via
- * {@link KiroAcpAgent}. This is the live path — `kiro-backend.ts` calls
- * `kiroAcpSdkAgentLoop` unconditionally, so any change here ships on deploy.
+ * {@link KiroAcpAgent}. This is the LIVE path — `kiro-backend.ts` calls
+ * `kiroAcpSdkAgentLoop` UNCONDITIONALLY (there is no `KIRO_USE_ACP_SDK` gate in
+ * the live code), so any change here ships to production on deploy. The
+ * hand-written `kiroAgentLoop` is retained only as reference/rollback material,
+ * not as the default runtime path.
  *
- * The event fan-out (tool_call/tool_call_update → sink) goes through shared
- * pure helpers (`normalizeKiroToolName`, `processToolCallDiscardBoundary`,
- * `resolveToolResultOutput`, `truncateToolOutput`,
- * `shouldSuppressToolUseRedelivery`, the sanitizers), and a shared
- * parameterised unit test exercises those helpers so loop and helpers cannot
- * drift.
+ * Design: this is a SEPARATE loop in its own file — the legacy
+ * `kiroAgentLoop` is not touched. The
+ * fan-out (tool_call/tool_call_update → sink) is reproduced through the SAME
+ * shared pure helpers the legacy loop uses (`normalizeKiroToolName`,
+ * `processToolCallDiscardBoundary`, `resolveToolResultOutput`,
+ * `truncateToolOutput`, `shouldSuppressToolUseRedelivery`, the sanitizers) so
+ * the two paths cannot drift (mechanised drift guard); a shared parameterised
+ * unit test exercises those helpers for both paths.
  *
  * KiroAcpAgent owns its OWN subprocess + ACP session lifecycle (it does NOT go
  * through the legacy supervisor `reconcileActiveClient`/`ensureSessionStarted`).
@@ -31,37 +36,59 @@
  *   /proc liveness:
  *     KIRO_ACP_PROC_LIVENESS         (bool, default on)  enable /proc measurement gating
  *     KIRO_ACP_TOOL_PROBE_INTERVAL_MS(ms,  default 60000) tool-in-flight liveness probe interval (0=off)
- *   Watchdog:
+ *   Watchdog (pre-existing):
  *     KIRO_ACP_IDLE_TIMEOUT_MS       (ms,  default 600000)  idle watchdog
  *     KIRO_ACP_WALL_CLOCK_HARD_MS    (ms,  default 1800000) hard wall-clock ceiling
- *   Session-setup timeouts:
+ *   c5 — session-setup timeouts:
  *     KIRO_ACP_INITIALIZE_TIMEOUT_MS (ms,  default 120000) outer connect+handshake ceiling
  *     KIRO_ACP_SESSION_NEW_TIMEOUT_MS(ms,  default 30000)  session/new bound
  *     KIRO_ACP_SESSION_LOAD_TIMEOUT_MS(ms, default 120000) session/load bound (MCP re-register)
+ *   Tool-interruption markers: kiro-cli's built-in security filter can
+ *     interrupt tool execution; marker detection synthesizes terminal failed
+ *     results so the turn ends cleanly (see kiro-acp-agent.ts).
  *   Turn-to-turn process reuse:
  *     KIRO_ACP_PROCESS_REUSE         (bool, default on)  kill-switch; off = per-turn fresh spawn
  *     KIRO_ACP_PROCESS_MAX_AGE_MS    (ms,  default 21600000 = 6h) max pooled-process age
  *
- * ## Design notes
- *   - Session resume: v3 session files are synthesised from DDB history (with
- *     modelId) before passing sessionId to KiroAcpAgent, which issues
- *     session/load via ManualSession. kiroSessionId is persisted to DDB on the
- *     first successful turn.
- *   - Model runtime switch: mid-session model rotation via
- *     `rotateSessionForModel` (synthesize new session files with the desired
- *     modelId, verify via fabrication guard, persist new sessionId). The user
- *     is notified on failure, with a per-model dedup guard.
- *   - `ctx.environmentBlock` is appended to the system prompt before
- *     buildKiroPromptBlocks so the model sees the context-usage
- *     self-regulation hint; the block is not persisted.
- *   - Initial model selection: modelId is passed into
- *     synthesizeKiroSessionFilesV3 and written to the v3 session.json
+ * ## UNIMPLEMENTED GAP LIST (must be closed before the PR4 flag flip)
+ * This PR2 implements the happy-path turn only. The following legacy recovery
+ * concerns are intentionally NOT yet ported to this loop and MUST be checked at
+ * the flip gate (dual-path flip-gate design):
+ *   - Session synthesis (DDB history → kiro-cli session files) + `session/load`
+ *     resume: v3 session files are synthesised from DDB
+ *     history (with modelId) before passing sessionId to KiroAcpAgent, which
+ *     issues session/load via ManualSession. kiroSessionId is persisted to DDB
+ *     on the first successful turn.
+ *   - Stale-pid detection / SIGKILL recovery (killStaleKiroProcess et al.).
+ *   - Long-turn watchdog (idle 600s / hard-wall 1800s) around the stream.
+ *   - Update-queue drain before prompt (session/load replay bleed) — moot while
+ *     we always start fresh, but required once resume lands.
+ *   - `prompt()` rejection surfacing / `ensureStarted` failure → fixed rejected
+ *     ready (basic try/catch is present; full parity pending).
+ *   - Model runtime switch (`session/set_model`) and v3 `session/set_mode`:
+ *     mid-session model rotation via `rotateSessionForModel`
+ *     export (synthesize new session files with desired modelId, verify via
+ *     fabrication guard, persist new sessionId). User notified on failure with
+ *     dedup guard (legacy L2907-2918 parity).
+ *   - Multi-turn aggregation of cancelled tail turns (buildAggregatedCurrentTurn
+ *     is reused for the current-turn item, but resume semantics differ).
+ *   - **auto-retrigger backoff (retrigger family):** the legacy loop schedules a
+ *     transparent auto-retrigger on prompt failure (`computeRetriggerBackoffMs`
+ *     + `TurnResult.retrigger`/`retriggerDelayMs`). This loop currently returns a
+ *     plain error TurnResult with no retrigger, so a transient failure is not
+ *     auto-recovered.
+ *   - **`ctx.environmentBlock`:** appended to systemPrompt
+ *     before buildKiroPromptBlocks, same position as legacy (L2951-2952).
+ *     Model sees context-usage self-regulation hint; block is not persisted.
+ *   - **Initial model selection:** modelId is passed
+ *     into synthesizeKiroSessionFilesV3 and written to the v3 session.json
  *     metadata. kiro-cli resolves the model from this store on session/load.
  *     The resolveModelConfig precedence logic feeds the synthesis.
- *   - `--trust-all-tools`: the v3 engine rejects this CLI flag. The SDK-path
- *     equivalent is the `session/request_permission` ACP request handler in
- *     kiro-acp-agent.ts, which auto-selects `allow_always` / `allow_once` for
- *     every permission prompt — achieving the same effect without the flag.
+ *   - **`--trust-all-tools` on v3:** v3 engine rejects this CLI flag. The
+ *     equivalent for the SDK path is the `session/request_permission` ACP
+ *     request handler in kiro-acp-agent.ts (L179-185) which auto-selects
+ *     `allow_always` / `allow_once` for every permission prompt — achieving
+ *     the same effect as `--trust-all-tools` without the CLI flag.
  */
 import type { ToolEventSink, TurnContext, TurnResult, PersistedToolUse } from '@remote-swe-agents/agent-core/lib';
 import { Message } from '@aws-sdk/client-bedrock-runtime';
@@ -79,10 +106,16 @@ import {
 } from '@remote-swe-agents/agent-core/lib';
 import { INTERNAL_ERROR_MESSAGE_TYPE } from '@remote-swe-agents/agent-core/schema';
 import { persistErrorBubble } from './persist-error-bubble';
+import { logMcpConnectDiagnostics } from './kiro-mcp-connect-diagnostics';
 import { KiroAcpAgent } from './strands/kiro-acp-agent';
 import type { KiroAcpPromptInput } from './strands/kiro-acp-agent';
 import { randomUUID } from 'node:crypto';
-import { synthesizeKiroSessionFilesV3, kiroV3SessionFilesExist, readKiroV3SessionModelId } from './kiro-session-synth';
+import {
+  synthesizeKiroSessionFilesV3,
+  kiroV3SessionFilesExist,
+  readKiroV3SessionModelId,
+  patchKiroV3SessionAgentMode,
+} from './kiro-session-synth';
 import { computeSynthPlan } from './compute-synth-plan';
 import { rotateSessionForModel, type RotationResult } from './strands/rotate-session-for-model';
 import {
@@ -111,6 +144,7 @@ import {
   computeRetriggerBackoffMs,
   buildRetryFailureResult,
   runImageDimensionRecovery,
+  makeImageRecoveryResynth,
   NON_EMPTY_DISCARD_WARNING,
   classifyKiroFailure,
   decideRetryLadder,
@@ -133,11 +167,11 @@ const SEND_MESSAGE_TO_USER_NAMES = [
   'Send_Message_To_User',
 ];
 
-/** Why the loop is finalizing the pooled agent for this turn (process reuse). */
+/** Why the loop is finalizing the pooled agent for this turn. */
 export type ReleaseReason = 'ok' | 'cancelled' | 'error';
 
 /**
- * Process-reuse finalize decision (pure): whether the turn's agent should be KEPT in the
+ * Finalize decision (pure): whether the turn's agent should be KEPT in the
  * pool for the next turn or DISPOSED. Kept only on a clean completion, with
  * reuse enabled, a non-fallback session, and a live subprocess; every other
  * case disposes (cancel/error → avoid the -32603 reuse race + history
@@ -157,7 +191,7 @@ export function decideFinalizeAction(
  * Dedup guard for model-switch failure notifications (container-lifetime).
  * Maps workerId → the desiredModel label we already notified the user about.
  * Cleared on rotation success so a subsequent failure re-notifies. Mirrors
- * legacy KiroClientState.modelSwitchFailureNotifiedFor.
+ * legacy KiroClientState.modelSwitchFailureNotifiedFor (L2850/L2897).
  */
 export const modelSwitchFailureNotifiedFor = new Map<string, string>();
 
@@ -258,7 +292,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
     console.warn('[kiro-mcp-debug] failed to log mcpServers:', e);
   }
 
-  // ---- Session synthesis + resume (v3 only) ---------------------------------
+  // ---- Session synthesis + resume (v3 only) ----------------------------
   // Resolve or generate a kiro sessionId. On the first turn (no persisted id),
   // a new UUID is minted. On subsequent turns, resume the persisted session.
   const sessionCwd = cwd;
@@ -278,19 +312,19 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
       ...(synthesisFailed ? {} : { sessionId: effectiveSessionId }),
     });
 
-  // ---- Turn-to-turn process reuse --------------------------------------------
+  // ---- Turn-to-turn process reuse ---------------------------------------
   // Before the per-turn spawn→synth→load→dispose cycle, try to reuse the live
   // kiro-cli subprocess kept from the previous turn. A reuse HIT skips the
-  // whole cold setup (session synthesis, model rotation, and session/load) and
+  // whole cold setup (synthesis, rotation, and session/load) and
   // prompts the same in-memory ACP session directly — the process already holds
   // the conversation, so re-synthesising from DDB is unnecessary and is the
   // demoted recovery path. Reuse requires a persisted sessionId (turn ≥ 2); the
   // pool key includes the rewind fingerprint so a webapp rewind/undo forces a
   // recycle → cold synth+load from the rewind-filtered history.
-  // Build the reuse key from the CURRENT effective state. The MCP
+  // build the reuse key from the CURRENT effective state. The MCP
   // config, API key and cwd are folded in so any change forces a recycle;
-  // the key is recomputed via this closure so the finalize/store path uses
-  // the EFFECTIVE sessionId/model after synthesis + model rotation, not the
+  // the key is recomputed via this closure so the finalize/store path (store path) uses
+  // the EFFECTIVE sessionId/model after synthesis + rotation, not the
   // stale turn-entry values.
   const currentReuseKey = () =>
     buildReuseKey({
@@ -325,7 +359,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
     await runColdSessionSetup();
     // Cache the freshly-started agent for the next turn's reuse (only when
     // synthesis did not fall back to a fresh random id — a fabrication-fallback
-    // session has no persisted id yet). The key is recomputed HERE with the
+    // session has no persisted id yet). the key is recomputed HERE with the
     // effective (post-synth / post-rotation) sessionId + model, so turn 1 no
     // longer stores under an empty-sessionId key that guarantees a turn-2 miss.
     if (kiroProcessReuseEnabled() && !synthesisFailed && agent) {
@@ -337,6 +371,21 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
     // Defensive: both branches always assign `agent`. This guard narrows the
     // type for the rest of the loop and fails loudly if that invariant breaks.
     throw new Error('[kiro-acp-sdk-loop] internal error: agent not initialised after session setup');
+  }
+
+  // disk-consistency patch for the process-REUSE branch (which skips
+  // runColdSessionSetup entirely, so the pre-load patch above never ran for it).
+  // On reuse the live session already has the profile applied in-process, so this
+  // is a no-op for the current turn, but it keeps the on-disk agentMode correct
+  // for the NEXT cold load of the same session. The cold path is already patched
+  // pre-load inside runColdSessionSetup, so this is idempotent there. Best-effort.
+  if (!synthesisFailed && ctx.kiroAgentName) {
+    const patched = patchKiroV3SessionAgentMode(effectiveSessionId, sessionCwd, ctx.kiroAgentName);
+    if (patched) {
+      console.log(
+        `[kiro-acp-sdk-loop] patched session.json agentMode=${ctx.kiroAgentName} for ${effectiveSessionId} (post-setup)`
+      );
+    }
   }
 
   // Cold-path session setup extracted into a closure so the reuse branch can
@@ -359,6 +408,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
           cwd: sessionCwd,
           items: itemsToSynth,
           modelId: modelIdForSynth,
+          agentMode: ctx.kiroAgentName,
         });
         console.log(
           `[kiro-acp-sdk-loop] v3 session synthesised: ${synth.events.length} events for ${effectiveSessionId} ` +
@@ -384,12 +434,12 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
       }
     }
 
-    // ---- Mid-session model rotation (legacy applyDesiredModel parity) ----------
+    // ---- Mid-session model rotation (port of the legacy applyDesiredModel) ----
     // When a per-message model override changes the desired model from what was
     // previously stored in the session, we rotate: re-synthesize under a fresh
     // sessionId carrying the new modelId, then use that for the agent constructor.
     // On rotation failure, the turn proceeds on the previous model and the user is
-    // notified (with dedup guard, legacy parity).
+    // notified (with dedup guard, legacy L2907-2918 parity).
     if (!synthesisFailed && persistedKiroSessionId) {
       const rotationResult = await rotateSessionForModel(
         {
@@ -401,7 +451,13 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
           cwd: sessionCwd,
         },
         {
-          synthesize: synthesizeKiroSessionFilesV3,
+          // rotation re-synthesises under a FRESH sessionId; forward
+          // agentMode so the rotated session.json records the custom-agent
+          // profile instead of defaulting to 'vibe'. Otherwise KAS's
+          // session/load (issued below by agent.start()) reads the stale 'vibe'
+          // mode and the remote-swe profile is never applied for the
+          // model-switch turn (prompt-timeout failure class).
+          synthesize: (opts) => synthesizeKiroSessionFilesV3({ ...opts, agentMode: ctx.kiroAgentName }),
           readModelId: readKiroV3SessionModelId,
           sessionFilesExist: kiroV3SessionFilesExist,
           persistSessionId: (wid, sid) => updateSessionKiroSessionId(wid, sid),
@@ -420,16 +476,34 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
       effectiveSessionId = outcome.effectiveSessionId;
     }
 
+    // Critical merge-placement fix: patch the persisted session.json's
+    // agentMode to the custom-agent profile BEFORE agent.start() issues
+    // session/load. synthesizeKiroSessionFilesV3 only writes agentMode when it
+    // runs (files absent), and a resume turn whose files already exist — or a
+    // pre-upgrade session written as 'vibe' — would otherwise be loaded with the
+    // stale mode (KAS hydrateSessionForLoad prefers the persisted value over the
+    // request modeId), dropping the remote-swe MCP profile for the turn. Placing
+    // this after synth + rotation and before makeAgent()/start() restores the
+    // pre-merge synth→rotation→patch→makeAgent→start ordering.
+    if (!synthesisFailed && ctx.kiroAgentName) {
+      const patched = patchKiroV3SessionAgentMode(effectiveSessionId, sessionCwd, ctx.kiroAgentName);
+      if (patched) {
+        console.log(
+          `[kiro-acp-sdk-loop] patched session.json agentMode=${ctx.kiroAgentName} for ${effectiveSessionId} (cold, pre-load)`
+        );
+      }
+    }
+
     agent = makeAgent();
 
-    // Separate the session start (load) phase from the prompt phase.
+    // D5 : separate the session start (load) phase from the prompt phase.
     // Only load-phase failures clear the persisted kiroSessionId (stale-ID recovery).
     // Prompt-phase failures (tool errors, network transients) leave the session intact
     // — the native session continuity outperforms DDB-based re-synthesis for those.
     //
     // Stale-pid recovery (Option C, legacy parity): if session/load fails with a
     // "Session is active in another process (PID N)" error, attempt to kill the
-    // stale process and retry once. v3 is lock-free so this path
+    // stale process and retry once. v3 is lock-free (legacy L2300-2304) so this path
     // is normally dormant; it covers future v3 locking or D3 v2+SDK reachability.
     try {
       await agent.start();
@@ -515,6 +589,14 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
     }
   } // end runColdSessionSetup
 
+  // MCP-connect observability: KAS records MCP connect outcomes (ok / removed / error
+  // + connectDurationMs) only to ~/.kiro/logs/<ts>/mcp.log, never to
+  // stdout/stderr, so a server silently dropped for exceeding KAS's connect
+  // deadline is invisible in worker logs. Lift that per-server signal into the
+  // worker log now that agent.start() (session/new|load + MCP connect) has
+  // completed. Best-effort: never throws.
+  logMcpConnectDiagnostics(`workerId=${workerId}`);
+
   // ---- fan-out state (mirrors kiroAgentLoop) --------------------------------
   const inFlight = new Map<
     string,
@@ -523,7 +605,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
   const suppressedRedeliveryToolCallIds = new Set<string>();
   const flushState: ToolBoundaryFlushState = { bufferedRawText: '', discardedRawSoFar: '' };
   let sendMessageToUserCalled = false;
-  // Tool-activity guard: whether the CURRENT attempt has persisted any toolUse (performed tool
+  // Whether the CURRENT attempt has persisted any toolUse (performed tool
   // activity). If it has and the attempt then fails, an in-turn retry would
   // blindly re-execute those side effects, so the ladder declines to retry and
   // hands off to the cross-turn auto-retrigger (history re-synthesis) instead.
@@ -536,11 +618,11 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
 
   const handleToolCall = async (toolCallId: string, rawTitle: string, kind: string, rawInput: unknown) => {
     // Flag tool activity SYNCHRONOUSLY the moment a tool_call is
-    // dispatched, BEFORE any await. `canReprompt` (read synchronously by the
-    // probe / delayed-ack path) must observe this immediately — otherwise
+    // dispatched, BEFORE any await. `canReprompt` (read synchronously by the cancel-probe
+    // probe / NB-2 delayed-ack path) must observe this immediately — otherwise
     // a stop('cancelled') arriving right after a tool_call but before the async
     // persist completes would read a stale `false` and re-prompt a session
-    // whose tool side effects already fired (the exact double-execution
+    // whose tool side effects already fired (the exact double-execution case the re-prompt veto
     // guards against).
     toolActivityThisAttempt = true;
     const hadNonEmptyDiscard = flushState.bufferedRawText.trim().length > 0;
@@ -580,7 +662,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
       content: [{ toolUse: { toolUseId: toolCallId, name: toolName, input: (rawInput ?? {}) as any } }],
     };
     const persisted = await sink.persistToolUseMessage(workerId, toolUseMsg);
-    // Tool activity is already flagged synchronously at dispatch (see above);
+    // Tool activity is already flagged synchronously at dispatch;
     // this remains a harmless idempotent re-assert on the post-persist path.
     toolActivityThisAttempt = true;
     inFlight.set(toolCallId, { toolName, persisted, hadNonEmptyDiscard, rawInput });
@@ -597,7 +679,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
     // completed | failed. Persist + emit ONLY on terminal states — identical to
     // the legacy loop (kiro-agent-loop.ts). Without this guard the v2 initial
     // `status=''` update and the v3 `in_progress` updates (v3 emits 3 updates:
-    // in_progress×2 → completed) would each early-persist a
+    // in_progress×2 → completed, an observed live sequence) would each early-persist a
     // placeholder + delete the inFlight entry, so the real `completed` output
     // never lands in DDB and the toolResult event double-emits. Drop
     // non-terminal updates here, before any other processing (order matches
@@ -625,13 +707,13 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
         },
       ],
     };
-    // Persist tool-read images to S3 so session re-synthesis can recover
+    // C-1 ③: persist tool-read images to S3 so session re-synthesis can recover
     // visual context. Capture runs BEFORE the toolResult persist so the injected
     // image block lands in DDB (that block is the actual recovery mechanism); the
     // resized S3 key is also carried on the live emit (imageKeys) for the webapp.
     // Terminal-success only (status === 'completed'), once per toolUseId (the
     // inFlight entry is deleted right after persist), best-effort (capture failure
-    // must never break the tool result). Ported from the Bedrock loop's image recovery.
+    // must never break the tool result).
     let imageKeys: string[] | undefined;
     if (tracked && status === 'completed' && isImageReadToolName(toolName)) {
       const imagePath = extractImagePathFromToolInput(toolName, tracked.rawInput);
@@ -674,7 +756,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
   // slot cleared so the next turn cold starts. A synthesis-fallback session
   // (random id, not persisted) is never pooled.
   //
-  // 'ok' stores under currentReuseKey() (effective sessionId/model);
+  // 'ok' stores under currentReuseKey() (effective sessionId/model).
   // the dispose branch is UNCONDITIONAL — even a subprocess that reports
   // !isAlive() must have dispose() called so closeConnection fires and the
   // connectWith callback promise is not left pending (a micro-leak). dispose()
@@ -722,12 +804,12 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
   // inherit a half-streamed response (buffered text / open tool ids) from the
   // failed attempt.
   //
-  // The buffer/in-flight reset is ENQUEUED onto the existing `chain`
+  // NB-1: the buffer/in-flight reset is ENQUEUED onto the existing `chain`
   // rather than clobbering it with `Promise.resolve()`. Clobbering would let a
   // still-running persist from the aborted attempt write into DDB / mutate
   // `inFlight` AFTER we cleared it, corrupting the next attempt's bookkeeping.
   // Appending the clear to the tail of the chain lets all prior dispatched
-  // persists settle first. `resetTools` (default true) preserves the double-execution guard: a fresh
+  // persists settle first. `resetTools` (default true) preserves the veto invariant: a fresh
   // subprocess attempt clears toolActivityThisAttempt, but an in-session
   // reprompt (onReset) must NOT (it re-runs the SAME session, so prior tool
   // side effects still count against the tool-activity guard). The returned promise lets
@@ -755,9 +837,9 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
 
   // Retry-failure handling is the extracted, unit-tested `buildRetryFailureResult`
   // (kiro-loop-helpers): fast-fail on a repeat image error (no retrigger burst,
-  // below), else transparent auto-retrigger, else give-up bubble. Injected
+  // fast-fail), else transparent auto-retrigger, else give-up bubble. Injected
   // deps keep the fast-fail / giveup-bubble logic testable against real code.
-  // Every permanent SURFACE inside buildRetryFailureResult persists the
+  // C-2: every permanent SURFACE inside buildRetryFailureResult persists the
   // user-facing bubble (fast-fail + giveup) and returns its messageSK.
   const handleRetryFailure = (retryMsg: string, originalMsg: string): Promise<TurnResult> =>
     buildRetryFailureResult(
@@ -774,7 +856,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
     );
 
   // Shared prompt dispatcher so the initial attempt AND every recovery/retry
-  // attempt (retry-ladder respawn + image recovery) use identical event
+  // attempt (ladder respawn + image-recovery) use identical event
   // fan-out wiring and the SAME onReset/canReprompt hooks (no drift between
   // paths). Rebuilt per attempt via the serialised `chain` closure so a
   // respawn starts from a clean stream; `tag` labels the dispatch in logs.
@@ -804,7 +886,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
         // partial fan-out (buffered text / open tool ids) so the re-streamed
         // turn is not double-counted — but KEEP toolActivityThisAttempt, since
         // the reprompt reuses the SAME session and prior tool side effects are
-        // still live (the double-execution guard must still see them).
+        // still live (the tool-activity guard must still see them).
         onReset: onResetInSession,
         // Veto an alive-cancelled in-session re-prompt when this attempt
         // already performed tool activity — re-running the same prompt would
@@ -815,7 +897,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
       }
     );
 
-  // ---- Failure-class-aware in-turn retry ladder ------------------------------
+  // ---- Failure-class-aware in-turn retry ladder ------------------------
   // Replaces the previous "retry once for any non-permanent error" with an
   // independent per-class budget (KIRO_ACP_RETRY_MAX_PER_CLASS, default 3).
   // Each turn is one loop invocation, so the counters reset automatically on
@@ -856,7 +938,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
     } catch (promptErr) {
       const promptMsg = promptErr instanceof Error ? promptErr.message : String(promptErr);
 
-      // Quiesce the fan-out chain BEFORE classifying/deciding. tool_call
+      // NB-1: quiesce the fan-out chain BEFORE classifying/deciding. tool_call
       // persists run on the serialized `chain`; a prompt that dies right after
       // a tool_call dispatch (process-died / rejection / hard-wall) may still
       // have an in-flight persist that has not yet set toolActivityThisAttempt.
@@ -884,11 +966,11 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
       });
 
       if (decision === 'permanent') {
-        // Image-dimension errors classify as permanent for the ladder,
+        // C-1 ⑤: image-dimension errors classify as permanent for the ladder,
         // but are recoverable within the SAME turn by invalidating the on-disk
         // session files and re-synthesising from DDB (the re-synthesis degrades
         // oversized images to text placeholders so the constraint is no longer
-        // violated). Ported from the Bedrock loop's image recovery. Ordering: dispose
+        // violated). Ordering: dispose
         // BEFORE invalidate so kiro-cli cannot flush its in-memory session back
         // to disk after deletion (SIGTERM flush race). kiroSessionId
         // (effectiveSessionId / persisted) is NOT cleared — it is the id
@@ -908,15 +990,17 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
               // process is never handed to the next turn.
               dispose: () => finalizeAgent('error'),
               invalidate: invalidateKiroSessionFiles,
-              resynth: async (sid, scwd) => {
-                const { itemsToSynth } = computeSynthPlan(ctx.history, consumedTailCount);
-                await synthesizeKiroSessionFilesV3({
-                  sessionId: sid,
-                  cwd: scwd,
-                  items: itemsToSynth,
-                  modelId: modelArg,
-                });
-              },
+              // forward agentMode through the image-recovery resynth too,
+              // or the re-synthesised session.json is written as 'vibe' and the
+              // following startFreshAgent()→session/load drops the remote-swe
+              // profile for the retry prompt. Extracted to makeImageRecoveryResynth
+              // so the agentMode forwarding is unit-tested against real code.
+              resynth: makeImageRecoveryResynth({
+                synthesize: synthesizeKiroSessionFilesV3,
+                computeItems: () => computeSynthPlan(ctx.history, consumedTailCount).itemsToSynth,
+                modelId: modelArg,
+                agentMode: ctx.kiroAgentName,
+              }),
               startFreshAgent: async () => {
                 agent = makeAgent();
                 await agent.start();
@@ -924,7 +1008,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
                 // retry streams, symmetric with the ladder respawn (see the
                 // `decision === 'retry'` path). Awaited so the fresh attempt
                 // starts from drained buffers / cleared in-flight bookkeeping
-                // — otherwise the failed attempt's partial fan-out would
+                // (NB-1) — otherwise the failed attempt's partial fan-out would
                 // bleed into the recovery retry.
                 await resetFanoutForAttempt();
               },
@@ -939,7 +1023,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
           if (outcome.kind === 'retry-failed') {
             const retryMsg = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
             await finalizeAgent('error');
-            // Fast-fails when retryMsg is itself an image dimension error
+            // C-2: fast-fails when retryMsg is itself an image dimension error
             // (persists the bubble, no retrigger burst), else funnels to the
             // auto-retrigger / giveup-bubble path. handleRetryFailure calls
             // unsub() internally.
@@ -951,11 +1035,11 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
         }
 
         // Non-image permanent error: surface immediately (no retry, no
-        // retrigger). Persist the user-facing notification as an
+        // retrigger). C-2: persist the user-facing notification as an
         // 'assistant' bubble so it survives page reload, and deliver
         // sendSystemMessage with the SAME messageSK (main parity e44b8507).
         const hint = getKiroPermanentErrorHint(promptMsg);
-        const userNotification = `An error occurred. Retrying will not resolve this error, so processing has stopped.\n\nCause: ${hint}\n\nDetails: ${promptMsg.slice(0, 500)}`;
+        const userNotification = `An error occurred. This error will not be resolved by retrying, so the turn was stopped.\n\nCause: ${hint}\n\nDetails: ${promptMsg.slice(0, 500)}`;
         const messageSK = await persistErrorBubble(workerId, userNotification);
         await sendSystemMessage(workerId, userNotification, true, false, messageSK);
         const errorMessage: Message = { role: 'assistant', content: [{ text: userNotification }] };
@@ -976,9 +1060,9 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
         // auto-retrigger path via the shared, unit-tested handleRetryFailure
         // (buildRetryFailureResult): fast-fail on a repeat image error, else a
         // transparent auto-retrigger within the time budget, else the give-up
-        // bubble. Both the fast-fail and give-up surfaces persist the
+        // bubble. C-2: both the fast-fail and give-up surfaces persist the
         // user-facing bubble + return its messageSK. handleRetryFailure calls
-        // unsub() internally. Session preserved: kiroSessionId NOT cleared.
+        // unsub() internally. Session preserved : kiroSessionId NOT cleared.
         console.error(
           `[kiro-acp-sdk-loop] retry ladder exhausted for class=${cls} ` +
             `(used=${retryCounts[cls] ?? 0}/${maxPerClass}): ${promptMsg.slice(0, 300)}`
@@ -1000,7 +1084,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
       );
       // Mid-turn respawn: tear down the failed agent (and clear the pool slot
       // if it was the cached one) before spawning a fresh subprocess. Await the
-      // fan-out reset so the fresh attempt starts from clean bookkeeping.
+      // fan-out reset so the fresh attempt starts from clean bookkeeping (NB-1).
       await finalizeAgent('error');
       await resetFanoutForAttempt();
       agent = makeAgent();
@@ -1016,7 +1100,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
     }
   }
 
-  // If the success-path body throws (e.g. a DDB persist failure), the CLI's
+  // if the success-path body throws (e.g. a DDB persist failure), the CLI's
   // in-memory history and DDB have diverged — the pooled process must NOT be
   // reused as-is. Track it so the finally disposes ('error') instead of caching.
   let successPathThrew = false;
@@ -1065,7 +1149,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
       webappMessageAlreadyEmitted: sendMessageToUserCalled,
     };
   } catch (finalizeErr) {
-    // A throw from the success body (DDB persist etc.) means DDB and the
+    // a throw from the success body (DDB persist etc.) means DDB and the
     // CLI's in-memory session may have diverged → do not reuse this process.
     successPathThrew = true;
     throw finalizeErr;
@@ -1081,7 +1165,7 @@ export const kiroAcpSdkAgentLoop = async (ctx: TurnContext, sink: ToolEventSink)
 };
 
 /**
- * Empty-response retry: reproduce the finalize step's text derivation to decide
+ * Empty-response class: reproduce the finalize step's text derivation to decide
  * whether a successful prompt produced NO renderable text. Mirrors the
  * tool-boundary discard subtraction + think/template scrubbing applied in the
  * success path, so the ladder's empty check and the eventual `emptyTurn()`

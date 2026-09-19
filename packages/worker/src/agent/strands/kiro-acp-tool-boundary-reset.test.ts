@@ -1,5 +1,5 @@
 /**
- * Tool-boundary regression: `sawToolChild` must be reset at the TOOL BOUNDARY (every
+ * Regression: `sawToolChild` must be reset at the TOOL BOUNDARY (every
  * message once no tool is in-flight), not only on a 60s tool-probe tick.
  *
  * Pre-fix failure mode: a child-spawning tool (e.g. execute_bash) sets

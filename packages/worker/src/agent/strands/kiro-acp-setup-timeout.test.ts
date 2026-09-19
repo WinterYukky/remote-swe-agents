@@ -67,7 +67,7 @@ describe('c5 setup-timeout tunables', () => {
   });
 });
 
-describe('computeOuterCeilingMs', () => {
+describe('the phased setup timeout computeOuterCeilingMs', () => {
   it('is strictly larger than any inner bound so it never pre-empts an inner phase', () => {
     // initialize 120s, load 120s, new 30s → outer must exceed 120s (the max
     // inner), otherwise a load timeout would be mislabeled as initialize.
@@ -82,8 +82,8 @@ describe('computeOuterCeilingMs', () => {
   });
 });
 
-describe('awaitSessionOpen (start()-path surfacing)', () => {
-  it('a connect-phase rejection on connectionDone surfaces immediately with its real label', async () => {
+describe('the phased setup timeout awaitSessionOpen (start()-path surfacing)', () => {
+  it('the session-open await: a connect-phase rejection on connectionDone surfaces immediately with its real label', async () => {
     // `opened` never settles (it only resolves on success from inside
     // connectWith); connectionDone rejects with the real inner error. The race
     // must reject with THAT error, not hang until the outer bound.
@@ -102,7 +102,7 @@ describe('awaitSessionOpen (start()-path surfacing)', () => {
     ).resolves.toBeUndefined();
   });
 
-  it("session/load timeout is NOT dead code — it wins over the (larger) outer 'initialize' ceiling", async () => {
+  it("the outer initialize ceiling: session/load timeout is NOT dead code — it wins over the (larger) outer 'initialize' ceiling", async () => {
     // Simulate the real wiring: connectionDone carries the inner session/load
     // rejection produced by the inner withTimeout. Because the outer ceiling is
     // initialize+maxInner (> load), the inner load error is what surfaces.

@@ -80,11 +80,11 @@ describe('decideFinalizeAction (real production decision)', () => {
   });
 });
 
-describe('loop × pool — reuse hit after a clean turn (key alignment)', () => {
+describe('loop × pool — reuse hit after a clean turn (reuse-key alignment)', () => {
   it('turn-1 finalize(ok) stores under the effective-sessionId key; turn-2 acquire HITS', async () => {
     const pool = new KiroAgentPool<FakeAgent>({ now: () => 0, maxAgeMs: () => 10_000 });
     const agent1 = new FakeAgent(0);
-    // S1: store under the EFFECTIVE (post-synth) sessionId, not the turn-entry empty one.
+    // store under the EFFECTIVE (post-synth) sessionId, not the turn-entry empty one.
     const effectiveKey = () => buildReuseKey(keyInput({ sessionId: 'sess-A' }));
     await finalize(pool, agent1, 'ok', { reuseEnabled: true, synthesisFailed: false, currentReuseKey: effectiveKey });
     expect(pool.isCached(agent1)).toBe(true);

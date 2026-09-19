@@ -32,7 +32,7 @@ describe('interpretCancelProbeMessage', () => {
     expect(res.stopMessage?.stopReason).toBe('cancelled');
   });
 
-  it('a non-cancelled stop (end_turn/max_tokens) is a COMPLETED turn, not alive-cancelled', () => {
+  it('the corrected cancel window: a non-cancelled stop (end_turn/max_tokens) is a COMPLETED turn, not alive-cancelled', () => {
     // The prompt actually FINISHED during the probe window (agent was slow, not
     // wedged). It must be returned as the turn result, NOT re-prompted — a
     // re-prompt would re-run a completed turn and double its side effects.

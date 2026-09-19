@@ -10,17 +10,17 @@
  * the backend boundary.
  *
  * Direction:
- *  - `bedrockToStrands*`: stored/Bedrock → Strands (for loading history into
- *  `new Agent({ messages })`).
- *  - `strandsToBedrock*`: Strands → stored/Bedrock (for persisting the assistant
- *  message the Strands loop produced, via the existing saveConversationHistory).
+ *   - `bedrockToStrands*`: stored/Bedrock → Strands (for loading history into
+ *     `new Agent({ messages })`).
+ *   - `strandsToBedrock*`: Strands → stored/Bedrock (for persisting the assistant
+ *     message the Strands loop produced, via the existing saveConversationHistory).
  *
  * Round-trip fidelity: text / toolUse / toolResult / reasoning (text, signature
  * and redactedContent) / image (bytes + s3Key) / video / document / guardContent /
  * citations are mapped in both directions and survive convert→persist→load→convert.
  * Round-trip tests cover text / toolUse / toolResult / reasoning / image / video /
  * document / guardContent; the SDK natively supports all these block types, so no
- * opaque passthrough markers are needed (rewrite).
+ * opaque passthrough markers are needed.
  *
  * NOTE: cachePoint blocks are NOT round-tripped through storage — they are a
  * per-call caching hint inserted just before the model call (inside

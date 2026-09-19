@@ -2,9 +2,9 @@
  * toStrandsTool — adapt a remote-swe `ToolDefinition` to a Strands `tool()`
  * =========================================================================
  * remote-swe tools are `ToolDefinition<Input>`:
- *  { name, schema: ZodType<Input>, toolSpec(): Promise<Tool['toolSpec']>,
- *  handler(input, { workerId, toolUseId, globalPreferences, cancellationToken? })
- *  => Promise<string | ToolResultContentBlock[]> }
+ *   { name, schema: ZodType<Input>, toolSpec(): Promise<Tool['toolSpec']>,
+ *     handler(input, { workerId, toolUseId, globalPreferences, cancellationToken? })
+ *       => Promise<string | ToolResultContentBlock[]> }
  *
  * Strands wants `tool({ name, description, inputSchema, callback })` where
  * `callback(input, ctx?: ToolContext)` returns the tool result. The remote-swe
@@ -182,7 +182,7 @@ export function bedrockToolResultToSdkContent(blocks: ToolResultContentBlock[]):
 
 /**
  * Convert MCP tool content array to SDK-native content blocks.
- * Exported for testability (Critical path).
+ * Exported for testability.
  */
 export function mcpContentToSdkBlocks(
   content: { type?: string; text?: string; mimeType?: string; data?: string }[],

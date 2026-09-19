@@ -59,6 +59,7 @@ import { CancellationToken } from '../common/cancellation-token';
 import { notifyTermination } from '../common/notify-termination';
 import { buildSessionHierarchyPrompt } from './lib/session-hierarchy';
 import { DefaultAgent, getEssentialSystemPrompt, getDefaultKnowledgePrompt } from './lib/default-agent';
+import { buildRemoteSweProfileMcpServers } from './kiro-mcp-servers';
 import { findRepositoryKnowledge } from './lib/knowledge';
 import { refreshSession } from '../common/refresh-session';
 import { getProcessRuntimeType } from '../runtime-type';
@@ -284,10 +285,19 @@ const buildSystemPrompt = async (opts: {
   // directory OUTSIDE the repo so kiro-cli can discover them via symlink. Only
   // deploy when the session runs in kiro-cli inference mode — the hooks
   // mechanism is a kiro-cli-native feature with no effect on Bedrock sessions.
+  // Deploy unconditionally in kiro-cli mode (not gated on skills), so the base
+  // worker agent profile (includeMcpJson: true) is always deployed and the
+  // remote-swe MCP tools are exposed to the model even for skill-less users.
   let kiroAgentName: string | undefined;
-  if (userSkills.length > 0 && inferenceMode === 'kiro-cli') {
+  if (inferenceMode === 'kiro-cli') {
     try {
-      kiroAgentName = deployKiroWorkspaceFiles(userSkills, cwd, workerId);
+      // Declare the remote-swe MCP server IN the base worker profile (stdio
+      // default) so the kiro engine exposes its tools and honours waitForReady
+      // on the profile-resolution path. buildKiroMcpServerList correspondingly
+      // omits remote-swe from the ACP client server list to avoid a double
+      // spawn.
+      const baseAgentMcpServers = buildRemoteSweProfileMcpServers(workerId);
+      kiroAgentName = deployKiroWorkspaceFiles(userSkills, cwd, workerId, baseAgentMcpServers);
     } catch (error) {
       // Deploy failed — kiroAgentName stays undefined so the kiro agent loop
       // will NOT pass --agent, preventing a launch against a missing agent JSON.

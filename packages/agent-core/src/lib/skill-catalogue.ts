@@ -137,11 +137,11 @@ export const downloadSkillFiles = async (skills: Skill[]): Promise<void> => {
  * ## CR1: The symlink is excluded from git via `.git/info/exclude` to prevent
  * accidental commit via `git add -A`.
  *
- * ## CR2: If the repo already contains a real (non-symlink) `.kiro/`
+ * ## the real-.kiro safeguard: If the repo already contains a real (non-symlink) `.kiro/`
  * directory, deployment is skipped with a warning to avoid destroying
  * user-owned content.
  *
- * ## CR3/CR4: Returns the validated kiro-agent name on success so the caller
+ * ## Returns the validated kiro-agent name on success so the caller
  * can store it for later use by kiro-agent-loop (preventing --agent from
  * being passed when deployment failed). The verification target is unified
  * with resolveKiroAgentName's resolution logic.
@@ -159,7 +159,64 @@ export const downloadSkillFiles = async (skills: Skill[]): Promise<void> => {
  * undefined if no skill declares a kiro-agent or deployment was skipped.
  * @throws Error if deployment proceeds but the resolved agent JSON is missing.
  */
-export const deployKiroWorkspaceFiles = (skills: Skill[], repoCwd: string, workerId: string): string | undefined => {
+/**
+ * Name of the always-deployed base worker agent profile (always-deployed profile). This profile
+ * exists purely to make `includeMcpJson: true` the active tool policy so the
+ * remote-swe MCP servers the worker supplies over ACP (session/new mcpServers)
+ * are actually exposed to the model. A default (no-profile) vibe session has
+ * includeMcpJson=false and filters ALL MCP tools out — which is why the
+ * kiro-cli path never exposed remote-swe tools until now (see MCP-D backlog).
+ * Fixed name + deterministic content = idempotent and safe under a shared HOME.
+ */
+export const BASE_WORKER_AGENT_NAME = 'remote-swe-worker';
+
+/**
+ * Profile MCP server entries (record keyed by server name), matching KAS's
+ * agent-profile `mcpServers` wire schema. The worker supplies this so the
+ * remote-swe server is declared IN the base profile — this is what makes KAS
+ * (a) expose its tools via `includeMcpJson` AND (b) honour `waitForReady` on
+ * the profile-resolution path so tool-selection waits for the connect (always-deployed profile).
+ * MUST NOT contain secrets: the profile JSON is written to disk. The worker
+ * (buildRemoteSweProfileMcpServers) fills the server's `env` with only
+ * NON-secret config (region, resource names/ARNs, endpoints, param NAMEs,
+ * paths, flags) via a strict allowlist. AWS credentials are NOT written here:
+ * the spawned subprocess resolves them at runtime from the HOME-based cred
+ * cache (HOME is one of the 6 env vars KAS forwards to a profile server), and
+ * secret VALUES (Slack/GitHub tokens) are resolved at runtime from SSM/file —
+ * never persisted to the profile JSON.
+ */
+export type BaseAgentMcpServers = Record<string, unknown>;
+
+/**
+ * Write the base worker agent JSON into `<kiroDest>/agents/`. Deterministic
+ * content; overwritten every deploy. `tools: "*"` keeps today's effective tool
+ * set, and `includeMcpJson: true` exposes MCP tools to the model. When
+ * `mcpServers` is provided (the worker's remote-swe stdio server, with
+ * `waitForReady:true`), it is declared in the profile so KAS resolves + awaits
+ * it on the profile path — this is the operative fix (a default vibe
+ * session filters MCP tools out; and ACP-client-supplied servers do not block
+ * custom-agent tool-selection, so their tools race the turn).
+ */
+const writeBaseWorkerAgent = (kiroDest: string, mcpServers?: BaseAgentMcpServers): void => {
+  const agentsDir = path.join(kiroDest, 'agents');
+  fs.mkdirSync(agentsDir, { recursive: true });
+  const agentJson = {
+    name: BASE_WORKER_AGENT_NAME,
+    description: 'Remote SWE worker base agent: full tools + MCP exposure.',
+    tools: '*',
+    includeMcpJson: true,
+    includePowers: true,
+    ...(mcpServers && Object.keys(mcpServers).length > 0 ? { mcpServers } : {}),
+  };
+  fs.writeFileSync(path.join(agentsDir, `${BASE_WORKER_AGENT_NAME}.json`), JSON.stringify(agentJson, null, 2));
+};
+
+export const deployKiroWorkspaceFiles = (
+  skills: Skill[],
+  repoCwd: string,
+  workerId: string,
+  baseAgentMcpServers?: BaseAgentMcpServers
+): string | undefined => {
   const kiroWorkspaceDir = getKiroWorkspaceDir(workerId);
   const kiroDest = path.join(kiroWorkspaceDir, '.kiro');
 
@@ -169,6 +226,13 @@ export const deployKiroWorkspaceFiles = (skills: Skill[], repoCwd: string, worke
   }
   fs.mkdirSync(kiroDest, { recursive: true });
 
+  // always deploy the base worker agent so a profile with
+  // includeMcpJson:true (+ the remote-swe server, if supplied) is available
+  // even when no skill declares one. Written before skill copy so a
+  // skill-provided agents/<name>.json still wins via last-write-wins if it
+  // legitimately reuses the name.
+  writeBaseWorkerAgent(kiroDest, baseAgentMcpServers);
+
   // W1: Sort skills by updatedAt ASCENDING so the most-recently-updated
   // skill deploys LAST and its files win via last-write-wins overwrite.
   const sorted = [...skills].sort((a, b) => a.updatedAt - b.updatedAt);
@@ -176,7 +240,6 @@ export const deployKiroWorkspaceFiles = (skills: Skill[], repoCwd: string, worke
   // S2: Detect conflicting kiro-agent declarations across skills.
   const agentDeclarations: Array<{ skillId: string; agentName: string }> = [];
 
-  let deployedAny = false;
   for (const skill of sorted) {
     const skillDir = path.join(getSkillsLocalDir(), skill.SK);
     const kiroSrc = path.join(skillDir, '.kiro');
@@ -206,7 +269,6 @@ export const deployKiroWorkspaceFiles = (skills: Skill[], repoCwd: string, worke
     }
 
     copyDirRecursive(kiroSrc, kiroDest);
-    deployedAny = true;
     console.log(`[skill-catalogue] Deployed .kiro/ from skill ${skill.SK} to ${kiroDest}`);
   }
 
@@ -225,8 +287,10 @@ export const deployKiroWorkspaceFiles = (skills: Skill[], repoCwd: string, worke
     }
   }
 
-  if (deployedAny) {
-    // CR2: Check if repoCwd already has a real (non-symlink) .kiro directory.
+  // We always deploy at least the base worker agent, so the symlink must be
+  // created unconditionally (previously gated on skill content existing).
+  {
+    // Check if repoCwd already has a real (non-symlink) .kiro directory.
     // If so, we must NOT destroy it — skip symlink creation and warn.
     const repoKiroLink = path.join(repoCwd, '.kiro');
     try {
@@ -235,14 +299,15 @@ export const deployKiroWorkspaceFiles = (skills: Skill[], repoCwd: string, worke
         // Our own previous symlink — safe to replace
         fs.unlinkSync(repoKiroLink);
       } else if (stat.isDirectory() || stat.isFile()) {
-        // CR2: Real user-owned .kiro/ exists. Do NOT destroy it.
-        // Return undefined so --agent is NOT passed — our deployed hooks are
-        // not discoverable (symlink not created) and the user's .kiro/ may
-        // not contain the expected agent JSON.
+        // Real user-owned .kiro/ exists. Do NOT destroy it. Return
+        // undefined so no modeId/--agent is passed: the base profile is not
+        // discoverable (symlink not created), so the session falls back to
+        // today's default-vibe behaviour (MCP tools filtered). Logged so this
+        // edge is detectable. This edge is deliberate.
         console.warn(
           `[skill-catalogue] repoCwd already contains a real .kiro/ directory (not a symlink). ` +
             `Skipping symlink creation to avoid destroying user-owned content. ` +
-            `Hooks will not be discoverable by kiro-cli via symlink; --agent will not be passed.`
+            `Base worker agent profile is NOT discoverable; falling back to default session (MCP tools will not be exposed).`
         );
         return undefined;
       }
@@ -262,7 +327,7 @@ export const deployKiroWorkspaceFiles = (skills: Skill[], repoCwd: string, worke
   // work correctly when the worker uses the v3 engine (KAS).
   transformDeployedAgentHooksForV3(kiroDest);
 
-  // CR3/CR4: Use resolveKiroAgentName for the authoritative agent name resolution
+  // Use resolveKiroAgentName for the authoritative agent name resolution
   // (same logic kiro-agent-loop would use). Verify the agent JSON exists for
   // the resolved name.
   const resolvedAgent = resolveKiroAgentName(skills);
@@ -278,7 +343,10 @@ export const deployKiroWorkspaceFiles = (skills: Skill[], repoCwd: string, worke
     console.log(`[skill-catalogue] Verified agent JSON exists: ${agentJsonPath}`);
   }
 
-  return resolvedAgent;
+  // when no skill declares an agent, activate the base worker agent so
+  // the session runs under a profile with includeMcpJson:true (MCP tools
+  // exposed) instead of a default vibe session (MCP tools filtered).
+  return resolvedAgent ?? BASE_WORKER_AGENT_NAME;
 };
 
 /**

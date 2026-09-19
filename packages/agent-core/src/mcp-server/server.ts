@@ -22,18 +22,6 @@ export const requiredParamNames = (schema: ToolDefinition<unknown>['schema']): s
   }
 };
 
-/**
- * Build an MCP server that exposes the curated remote-swe tool catalogue.
- *
- * Each remote-swe `ToolDefinition` is wrapped into an MCP tool:
- *   - the Zod `schema` is converted to JSON Schema for the `tools/list` reply
- *   - `tools/call` invokes the handler with a synthesised
- *     `{ workerId, toolUseId, globalPreferences }` context
- *   - handler return values are translated to MCP `content[]` shape
- *
- * The server is transport-agnostic; {@link runStdioServer} adds the stdio
- * plumbing expected by kiro-cli's ACP `session/new.mcpServers`.
- */
 export const buildMcpServer = (
   env: McpContextEnv = readEnvContext(),
   tools: ToolDefinition<unknown>[] = kiroExportedTools
@@ -59,10 +47,11 @@ export const buildMcpServer = (
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    // Exact-match lookup. With tool IDs aligned to the model's snake_case
-    // prior, no tolerant name remapping is warranted: the ACP client rejects
-    // unknown names before dispatch, so a transformed name should hard-fail
-    // here rather than being silently resolved.
+    // Exact-match lookup. With tool IDs now aligned to the model's snake_case
+    // prior with the snake_case rename, the former tolerant remap
+    // (canonicalToolKey/resolveToolName) is removed — it fired 0 times in
+    // production (KAS rejects unknown names before dispatch) and is superseded
+    // by the rename.
     const tool = toolByName.get(req.params.name);
     if (!tool) {
       return {
@@ -139,4 +128,40 @@ export const runStdioServer = async (): Promise<void> => {
   const server = buildMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // If kiro-cli dies WITHOUT delivering SIGTERM (e.g. SIGKILL / crash),
+  // this subprocess only observes its stdin reaching EOF — the exit handlers
+  // (SIGTERM/SIGINT/beforeExit) never fire, and an active preview's tunnel WS +
+  // token-refresh timer keep the event loop alive, so the orphaned process
+  // lingers. A lingering old process still holds its tunnel and, on the MicroVM
+  // side, gets 'replaced' when the successor adopts, triggering its
+  // scheduleReconnect() → a 30s tug-of-war over the tunnel.
+  //
+  // We must watch stdin EOF DIRECTLY: StdioServerTransport only registers
+  // stdin 'data'/'error' listeners and fires `onclose` solely from an explicit
+  // transport.close() (verified in the SDK's dist/esm/server/stdio.js), which
+  // nothing calls on the stdio path — so relying on transport.onclose here is a
+  // no-op for the SIGKILL case. Listen for 'end' (stdin read to EOF) and
+  // 'close' (fd closed) and, on either, detach the preview (leave the MicroVM
+  // alive for the successor) and exit(0) so the event loop is released and the
+  // old process cannot fight for the tunnel. Idempotent: the guard ensures the
+  // work runs once even if both events fire.
+  // C3: do NOT exit(0) immediately here. stdin EOF also arrives during a
+  // normal clean shutdown while a tools/call response is still in-flight on
+  // stdout; an immediate exit truncates that response (regressed bin.test.ts's
+  // stdio-hygiene assertion). Instead: detach the preview (releasing the tunnel
+  // WS + refresh timer that would otherwise pin the event loop), then let the
+  // loop drain naturally — with no preview holding it open the process exits on
+  // its own after flushing the in-flight response. Arm a 5s unref'd safety net
+  // that force-exits(0) only if something is still keeping the loop alive (the
+  // SIGKILL-orphan case this fix targets); .unref() ensures this timer
+  // never itself keeps the process alive.
+  let closeHandled = false;
+  const onStdinClosed = () => {
+    if (closeHandled) return;
+    closeHandled = true;
+    setTimeout(() => process.exit(0), 5000).unref();
+  };
+  process.stdin.on('end', onStdinClosed);
+  process.stdin.on('close', onStdinClosed);
 };

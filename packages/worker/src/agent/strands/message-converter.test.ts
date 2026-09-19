@@ -1,5 +1,5 @@
 /**
- * Golden round-trip tests for the Strands / Bedrock message converter.
+ * Golden round-trip tests for the Strands ↔ Bedrock message converter.
  * Verifies that text / toolUse / toolResult / reasoning / image (bytes + s3Key)
  * survive Bedrock → Strands → Bedrock without loss, so the on-disk
  * (Bedrock-wire) format never drifts when the Strands loop persists.
@@ -143,12 +143,12 @@ describe('message-converter round-trip', () => {
 });
 
 // ---------------------------------------------------------------------------
-// rewrite: SDK-level round-trip tests (exercises Message.fromJSON which
+// SDK-level round-trip tests (exercises Message.fromJSON which
 // internally calls contentBlockFromData — old opaque marker caused throw here)
 // ---------------------------------------------------------------------------
 import { Message } from '@strands-agents/sdk';
 
-describe(' native block support — SDK Message round-trip', () => {
+describe('native block support — SDK Message round-trip', () => {
   it('document block survives converter → Message.fromJSON → toJSON → converter', () => {
     const bedrockMsg: BedrockMessage = {
       role: 'user',

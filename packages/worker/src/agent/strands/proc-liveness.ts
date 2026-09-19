@@ -225,7 +225,7 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 export interface NewDescendantMeasurement {
   /** At least one non-baseline descendant is present (in either sample). */
   present: boolean;
-  /** A non-baseline descendant is running (R/D) or advanced CPU beyond the tick threshold. */
+  /** A non-baseline descendant is running (R/D) or advanced CPU beyond the CPU-advance threshold. */
   active: boolean;
   /** Whether `/proc` for the root was readable (fail-safe gate). */
   rootReadable: boolean;
@@ -297,8 +297,8 @@ export const initialToolProbeState = (): ToolProbeState => ({ sawChild: false, a
 export const DEAD_ABSENT_STREAK_THRESHOLD = 2;
 
 /**
- * Pure state machine for the tool-in-flight liveness probe (baseline
- * exclusion + absent-tick debounce).
+ * Pure state machine for the tool-in-flight liveness probe (tool-in-flight completion +
+ * debounce).
  *
  *  - active new descendant            → ALIVE (real work; keep waiting), reset streak
  *  - present-but-idle new descendant  → WAIT  (e.g. blocked on IO), reset streak

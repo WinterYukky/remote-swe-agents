@@ -110,7 +110,7 @@ const hashOf = (value: unknown): string => createHash('sha256').update(canonical
  * Normalise the MCP server list before hashing so the reuse key is
  * INVARIANT to the (turn-to-turn non-deterministic) ordering of
  * `buildKiroMcpServerList` output — otherwise a mere reordering would produce a
- * different key and force a spurious recycle (correctness preserved, but the
+ * different key and force a spurious recycle (correctness preserved, but the reuse
  * reuse win is silently lost). Sorts the array by a stable identity
  * (`type` + `name`, falling back to the canonical JSON of the entry) and
  * canonicalises object keys at every depth. A non-array value is hashed as-is.
@@ -151,7 +151,7 @@ export const buildReuseKey = (input: ReuseKeyInput): string => {
 
 /**
  * Whether turn-to-turn process reuse is enabled (default ON). Kill-switch:
- * `KIRO_ACP_PROCESS_REUSE=off` restores the per-turn fresh-spawn
+ * `KIRO_ACP_PROCESS_REUSE=off` restores the pre-reuse per-turn fresh-spawn
  * behaviour (the pool's `tryAcquire` always misses because nothing is ever
  * stored — the loop's `finalizeAgent` disposes instead of storing).
  */

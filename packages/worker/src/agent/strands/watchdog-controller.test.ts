@@ -2,10 +2,10 @@
  * WatchdogController unit tests — exercises the REAL controller class with
  * fake timers.
  *
- * Contract: the idle watchdog RESOLVES `wd.idle` (a recoverable
+ * Contract: the idle watchdog now RESOLVES `wd.idle` (a recoverable
  * signal that stream() turns into a non-lethal cancel probe) instead of
  * rejecting `wd.failure`. `wd.failure` rejects ONLY on the hard wall-clock
- * ceiling (always lethal). The in-flight deferral + single-deferred pattern
+ * ceiling (always lethal). The in-flight deferral + single-deferred (C-1)
  * semantics are unchanged.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -180,7 +180,7 @@ describe('WatchdogController', () => {
     wd.cleanup();
   });
 
-  // The tool-liveness probe fires WHILE a tool is in-flight (the idle
+  // tool-in-flight probe: the tool-liveness probe fires WHILE a tool is in-flight (the idle
   // watchdog defers in that case), so stream() can run the /proc probe with
   // expectToolChild=true and reach a DEAD verdict.
   it('toolProbe resolves after the interval only while a tool is in-flight', async () => {

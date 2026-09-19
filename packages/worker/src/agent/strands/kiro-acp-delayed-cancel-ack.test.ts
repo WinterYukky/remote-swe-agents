@@ -1,9 +1,9 @@
 /**
- * Delayed-ack regression: a delayed probe-cancel ack that arrives AFTER the
+ * Regression: a delayed probe-cancel ack that arrives AFTER the
  * probe took the `alive-updated` branch must be recovered (reset + re-prompt
  * the same session), NOT silently dropped as a `cancelled` terminal.
  *
- * Origin: a review proof-of-concept. On the pre-fix code the recovery
+ * Origin: the Reviewer's round-3 PoC. On the pre-fix code the NB-2 recovery
  * branch was DEAD (the `alive-updated` branch spent the single re-prompt
  * budget before the delayed ack arrived, so the ack-recovery condition
  * `cancelProbeRecoveries < MAX` was false → `buildResult('cancelled')` →
@@ -35,7 +35,7 @@ const flush = async () => {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 };
 
-describe('delayed probe-cancel ack after alive-updated → recovery, not a silent cancelled terminal', () => {
+describe('NB-2: delayed probe-cancel ack after alive-updated → recovery, not a silent cancelled terminal', () => {
   beforeEach(() => {
     vi.stubEnv('KIRO_ACP_IDLE_TIMEOUT_MS', '30');
     vi.stubEnv('KIRO_ACP_WALL_CLOCK_HARD_MS', '0');
