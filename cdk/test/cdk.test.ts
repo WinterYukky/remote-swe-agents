@@ -114,3 +114,98 @@ test('Kiro CLI inference mode wiring (opt-in)', () => {
   );
   expect(perUserGrant).toBeDefined();
 });
+
+// Guards the AWS::ImageBuilder::Component `Data` hard limit (16000 chars).
+// The snapshot test does NOT catch this: `Data` is an `Fn::Join` of literal
+// chunks + unresolved CFN intrinsics (SFN/role ARNs, table/bucket names, log
+// group, region), and it is the length AFTER those intrinsics resolve at
+// deploy time that must be <= 16000. A snapshot that passes at synth says
+// nothing about the resolved length, so a template can synthesize green and
+// still fail deploy-time validation with
+// "Model validation failed (#/Data: expected maxLength: 16000)".
+//
+// This test reconstructs the resolved-length upper bound the same way the
+// service does: literal chars (exact) + a conservative per-intrinsic budget
+// for the values CDK will substitute, and asserts the total stays under the
+// limit with margin.
+test('ImageBuilder component Data stays under the 16000-char limit after intrinsic expansion', () => {
+  jest.useFakeTimers().setSystemTime(new Date('2020-01-01'));
+
+  const app = new cdk.App({
+    context: {
+      ...JSON.parse(readFileSync('cdk.json').toString()).context,
+    },
+  });
+
+  const usEast1Stack = new UsEast1Stack(app, 'SizeUsEast1Stack', {
+    env: { account: '123456789012', region: 'us-east-1' },
+    crossRegionReferences: true,
+    allowedIpV4AddressRanges: ['192.168.1.0/24'],
+    allowedIpV6AddressRanges: ['2001:db8::/32'],
+    allowedCountryCodes: ['JP'],
+  });
+
+  const main = new MainStack(app, 'SizeMainStack', {
+    env: { account: '123456789012', region: 'us-east-1' },
+    crossRegionReferences: true,
+    signPayloadHandler: usEast1Stack.signPayloadHandler,
+    cloudFrontWebAclArn: usEast1Stack.webAclArn,
+    slack: {
+      botTokenParameterName: '/remote-swe/slack/bot-token',
+      signingSecretParameterName: '/remote-swe/slack/signing-secret',
+      adminUserIdList: undefined,
+    },
+    github: {
+      privateKeyParameterName: '/remote-swe/github/app-private-key',
+      appId: '123456',
+      installationId: '9876543',
+    },
+    initialWebappUserEmail: 'user@example.com',
+  });
+
+  const IMAGEBUILDER_COMPONENT_DATA_MAX = 16000;
+  // Conservative upper bound for a single resolved intrinsic. The longest
+  // values substituted into this component are SFN state-machine / IAM role
+  // ARNs (`arn:aws:states:<region>:<account>:stateMachine:<name>`, roughly
+  // 120-130 chars); most of the rest are short resource names (40-60 chars).
+  // Budget 96 per intrinsic sits well above the realistic average, so the
+  // test trips comfortably BEFORE a real deployment would hit the limit
+  // while not being so pessimistic that a healthy template fails.
+  const PER_INTRINSIC_BUDGET = 96;
+
+  const template = Template.fromStack(main);
+  const components = template.findResources('AWS::ImageBuilder::Component');
+  const entries = Object.entries(components);
+  expect(entries.length).toBeGreaterThan(0);
+
+  for (const [logicalId, resource] of entries) {
+    const data = resource.Properties.Data;
+    let literalChars = 0;
+    let intrinsicCount = 0;
+
+    if (typeof data === 'string') {
+      literalChars = data.length;
+    } else if (data && data['Fn::Join']) {
+      const parts = data['Fn::Join'][1] as unknown[];
+      for (const part of parts) {
+        if (typeof part === 'string') literalChars += part.length;
+        else intrinsicCount += 1;
+      }
+    } else {
+      throw new Error(`Unexpected Data shape for ${logicalId}: ${JSON.stringify(data).slice(0, 200)}`);
+    }
+
+    const estimatedResolved = literalChars + intrinsicCount * PER_INTRINSIC_BUDGET;
+    // If this fails, the diagnostic pinpoints the two levers (literal vs intrinsics):
+    // shrink the ImageBuilder component template (validate/test phases) or reduce
+    // the number of intrinsics baked into the AMI-time systemd unit.
+    if (estimatedResolved >= IMAGEBUILDER_COMPONENT_DATA_MAX) {
+      throw new Error(
+        `ImageBuilder component ${logicalId} Data too large: literal=${literalChars} + ` +
+          `intrinsics=${intrinsicCount}*${PER_INTRINSIC_BUDGET} => estimatedResolved=${estimatedResolved} ` +
+          `(limit ${IMAGEBUILDER_COMPONENT_DATA_MAX})`
+      );
+    }
+    expect(estimatedResolved).toBeLessThan(IMAGEBUILDER_COMPONENT_DATA_MAX);
+  }
+});
